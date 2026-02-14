@@ -1,21 +1,19 @@
+use crate::{println, cprintln, cprint, print_error, print_success, serial_println};
+use crate::miku_extfs::{MikuFS, FsError, FsInfo};
+use crate::miku_extfs::structs::*;
+use crate::miku_extfs::reader::DiskReader;
+use crate::miku_extfs::ext2::write::{TreeResult, FsckResult};
+use crate::miku_extfs::ext3::journal::{TxnTag, DEFAULT_JOURNAL_BLOCKS};
 use crate::ata::AtaDrive;
-use crate::fs::ext2::journal::TxnTag;
-use crate::fs::ext2::reader::DiskReader;
-use crate::fs::ext2::structs::*;
-use crate::fs::ext2::write::{FsckResult, TreeResult};
-use crate::fs::ext2::{Ext2Error, Ext2Fs};
-use crate::{cprint, cprintln, print_error, print_success, println, serial_println};
 
-static mut EXT2_STORAGE: Ext2Fs = Ext2Fs {
+static mut EXT2_STORAGE: MikuFS = MikuFS {
     superblock: Superblock { data: [0; 1024] },
     block_size: 0,
     inodes_per_group: 0,
     blocks_per_group: 0,
     group_count: 0,
     groups: [GroupDesc { data: [0; 64] }; 32],
-    reader: DiskReader {
-        drive: AtaDrive::EMPTY,
-    },
+    reader: DiskReader { drive: AtaDrive::EMPTY },
     journal_seq: 0,
     journal_pos: 0,
     journal_maxlen: 0,
@@ -23,10 +21,7 @@ static mut EXT2_STORAGE: Ext2Fs = Ext2Fs {
     journal_active: false,
     txn_active: false,
     txn_desc_pos: 0,
-    txn_tags: [TxnTag {
-        fs_block: 0,
-        journal_pos: 0,
-    }; 16],
+    txn_tags: [TxnTag { fs_block: 0, journal_pos: 0 }; 16],
     txn_tag_count: 0,
 };
 
@@ -34,7 +29,7 @@ static mut EXT2_READY: bool = false;
 
 fn with_ext2<F, R>(f: F) -> Option<R>
 where
-    F: FnOnce(&mut Ext2Fs) -> R,
+    F: FnOnce(&mut MikuFS) -> R,
 {
     unsafe {
         if !EXT2_READY {
@@ -50,7 +45,7 @@ pub fn is_ext2_ready() -> bool {
 
 pub fn with_ext2_pub<F, R>(f: F) -> Option<R>
 where
-    F: FnOnce(&mut Ext2Fs) -> R,
+    F: FnOnce(&mut MikuFS) -> R,
 {
     with_ext2(f)
 }
@@ -76,41 +71,31 @@ fn split_parent_name(path: &str) -> (&str, &str) {
 }
 
 fn resolve_parent_and_name<'a>(
-    fs: &mut Ext2Fs,
+    fs: &mut MikuFS,
     path: &'a str,
-) -> Result<(u32, &'a str), Ext2Error> {
+) -> Result<(u32, &'a str), FsError> {
     let (parent_path, name) = split_parent_name(path);
     if name.is_empty() {
-        return Err(Ext2Error::InvalidInode);
+        return Err(FsError::InvalidInode);
     }
     let parent_ino = fs.resolve_path(parent_path)?;
     Ok((parent_ino, name))
 }
 
-fn resolve_full_path(fs: &mut Ext2Fs, path: &str) -> Result<u32, Ext2Error> {
-    fs.resolve_path(path)
-}
-
 fn parse_ext2_octal(s: &str) -> Option<u16> {
     let mut result: u16 = 0;
     for &b in s.as_bytes() {
-        if b < b'0' || b > b'7' {
-            return None;
-        }
+        if b < b'0' || b > b'7' { return None; }
         result = result.checked_mul(8)?.checked_add((b - b'0') as u16)?;
     }
-    if result > 0o7777 {
-        return None;
-    }
+    if result > 0o7777 { return None; }
     Some(result)
 }
 
 fn parse_u16(s: &str) -> Option<u16> {
     let mut result: u16 = 0;
     for &b in s.as_bytes() {
-        if b < b'0' || b > b'9' {
-            return None;
-        }
+        if b < b'0' || b > b'9' { return None; }
         result = result.checked_mul(10)?.checked_add((b - b'0') as u16)?;
     }
     Some(result)
@@ -150,11 +135,7 @@ fn try_mount(drive_index: usize) -> bool {
     match reader.read_sector(2, &mut sector) {
         Ok(()) => {}
         Err(e) => {
-            serial_println!(
-                "[ext2] drive {} - cannot read sector 2: {:?}",
-                drive_index,
-                e
-            );
+            serial_println!("[ext2] drive {} - cannot read sector 2: {:?}", drive_index, e);
             return false;
         }
     }
@@ -164,22 +145,14 @@ fn try_mount(drive_index: usize) -> bool {
 
     let magic_lo = u16::from_le_bytes([sector[56], sector[57]]);
     if magic_lo != EXT2_MAGIC {
-        serial_println!(
-            "[ext2] drive {} - bad magic 0x{:04X}, skip",
-            drive_index,
-            magic_lo
-        );
+        serial_println!("[ext2] drive {} - bad magic 0x{:04X}, skip", drive_index, magic_lo);
         return false;
     }
 
     match reader.read_sector(3, &mut sector) {
         Ok(()) => {}
         Err(e) => {
-            serial_println!(
-                "[ext2] drive {} - cannot read sector 3: {:?}",
-                drive_index,
-                e
-            );
+            serial_println!("[ext2] drive {} - cannot read sector 3: {:?}", drive_index, e);
             return false;
         }
     }
@@ -196,13 +169,7 @@ fn try_mount(drive_index: usize) -> bool {
     let group_count = (blocks_count + blocks_per_group - 1) / blocks_per_group;
     let gd_size = unsafe { EXT2_STORAGE.superblock.group_desc_size() } as usize;
 
-    serial_println!(
-        "[ext2] bs={} blocks={} groups={} gd_size={}",
-        block_size,
-        blocks_count,
-        group_count,
-        gd_size
-    );
+    serial_println!("[ext2] bs={} blocks={} groups={} gd_size={}", block_size, blocks_count, group_count, gd_size);
 
     if group_count as usize > 32 {
         print_error!("  ext2: too many block groups ({})", group_count);
@@ -250,8 +217,7 @@ fn try_mount(drive_index: usize) -> bool {
 
         while pos + gd_size <= 512 && gd_idx < group_count as usize {
             unsafe {
-                EXT2_STORAGE.groups[gd_idx].data[..gd_size]
-                    .copy_from_slice(&sector[pos..pos + gd_size]);
+                EXT2_STORAGE.groups[gd_idx].data[..gd_size].copy_from_slice(&sector[pos..pos + gd_size]);
             }
             gd_idx += 1;
             pos += gd_size;
@@ -290,12 +256,12 @@ fn try_mount(drive_index: usize) -> bool {
 pub fn cmd_ext2_ls(path: &str) {
     let path = if path.is_empty() { "/" } else { path };
 
-    let result = with_ext2(|fs| -> Result<([DirEntry; 64], usize), Ext2Error> {
+    let result = with_ext2(|fs| -> Result<([DirEntry; 64], usize), FsError> {
         let ino = fs.resolve_path(path)?;
         let inode = fs.read_inode(ino)?;
 
         if !inode.is_directory() {
-            return Err(Ext2Error::NotDirectory);
+            return Err(FsError::NotDirectory);
         }
 
         let mut entries = [const { DirEntry::empty() }; 64];
@@ -327,16 +293,16 @@ pub fn cmd_ext2_cat(path: &str) {
         return;
     }
 
-    let result = with_ext2(|fs| -> Result<([u8; 512], usize, u64), Ext2Error> {
+    let result = with_ext2(|fs| -> Result<([u8; 512], usize, u64), FsError> {
         let ino = fs.resolve_path(path)?;
         let inode = fs.read_inode(ino)?;
 
         if inode.is_directory() {
-            return Err(Ext2Error::IsDirectory);
+            return Err(FsError::IsDirectory);
         }
 
         if !inode.is_regular() && !inode.is_symlink() {
-            return Err(Ext2Error::NotRegularFile);
+            return Err(FsError::NotRegularFile);
         }
 
         let size = inode.size();
@@ -365,7 +331,7 @@ pub fn cmd_ext2_stat(path: &str) {
         return;
     }
 
-    let result = with_ext2(|fs| -> Result<(u32, Inode), Ext2Error> {
+    let result = with_ext2(|fs| -> Result<(u32, Inode), FsError> {
         let ino = fs.resolve_path(path)?;
         let inode = fs.read_inode(ino)?;
         Ok((ino, inode))
@@ -402,22 +368,16 @@ pub fn cmd_ext2_stat(path: &str) {
 }
 
 pub fn cmd_ext2_info() {
-    let result = with_ext2(|fs| fs.fs_info());
+    let result = with_ext2(|fs| {
+        fs.fs_info()
+    });
 
     match result {
         Some(info) => {
             println!("  Version: {}", info.version);
             println!("  Block size: {} bytes", info.block_size);
-            println!(
-                "  Blocks: {} / {} used",
-                info.total_blocks - info.free_blocks,
-                info.total_blocks
-            );
-            println!(
-                "  Inodes: {} / {} used",
-                info.total_inodes - info.free_inodes,
-                info.total_inodes
-            );
+            println!("  Blocks: {} / {} used", info.total_blocks - info.free_blocks, info.total_blocks);
+            println!("  Inodes: {} / {} used", info.total_inodes - info.free_inodes, info.total_inodes);
             println!("  Groups: {}", info.groups);
             println!("  Inode size: {} bytes", info.inode_size);
             println!("  Journal: {}", if info.has_journal { "yes" } else { "no" });
@@ -433,7 +393,7 @@ pub fn cmd_ext2_write(path: &str, text: &str) {
         return;
     }
 
-    let result = with_ext2(|fs| -> Result<u32, Ext2Error> {
+    let result = with_ext2(|fs| -> Result<u32, FsError> {
         let (parent_ino, filename) = resolve_parent_and_name(fs, path)?;
 
         match fs.ext2_lookup_in_dir(parent_ino, filename)? {
@@ -463,7 +423,7 @@ pub fn cmd_ext2_mkdir(path: &str) {
         return;
     }
 
-    let result = with_ext2(|fs| -> Result<u32, Ext2Error> {
+    let result = with_ext2(|fs| -> Result<u32, FsError> {
         let (parent_ino, dirname) = resolve_parent_and_name(fs, path)?;
         fs.ext3_create_dir(parent_ino, dirname, 0o755)
     });
@@ -481,7 +441,7 @@ pub fn cmd_ext2_rm(path: &str) {
         return;
     }
 
-    let result = with_ext2(|fs| -> Result<(), Ext2Error> {
+    let result = with_ext2(|fs| -> Result<(), FsError> {
         let (parent_ino, name) = resolve_parent_and_name(fs, path)?;
         fs.ext3_delete_file(parent_ino, name)
     });
@@ -499,7 +459,7 @@ pub fn cmd_ext2_rmdir(path: &str) {
         return;
     }
 
-    let result = with_ext2(|fs| -> Result<(), Ext2Error> {
+    let result = with_ext2(|fs| -> Result<(), FsError> {
         let (parent_ino, name) = resolve_parent_and_name(fs, path)?;
         fs.ext3_delete_dir(parent_ino, name)
     });
@@ -517,7 +477,7 @@ pub fn cmd_ext2_rm_rf(path: &str) {
         return;
     }
 
-    let result = with_ext2(|fs| -> Result<u32, Ext2Error> {
+    let result = with_ext2(|fs| -> Result<u32, FsError> {
         let (parent_ino, name) = resolve_parent_and_name(fs, path)?;
         fs.ext2_delete_recursive(parent_ino, name)
     });
@@ -535,7 +495,7 @@ pub fn cmd_ext2_symlink(target: &str, linkname: &str) {
         return;
     }
 
-    let result = with_ext2(|fs| -> Result<u32, Ext2Error> {
+    let result = with_ext2(|fs| -> Result<u32, FsError> {
         let (parent_ino, name) = resolve_parent_and_name(fs, linkname)?;
         fs.ext2_create_symlink(parent_ino, name, target)
     });
@@ -553,7 +513,7 @@ pub fn cmd_ext2_rename(old_path: &str, new_name: &str) {
         return;
     }
 
-    let result = with_ext2(|fs| -> Result<(), Ext2Error> {
+    let result = with_ext2(|fs| -> Result<(), FsError> {
         let (parent_ino, old_name) = resolve_parent_and_name(fs, old_path)?;
         fs.ext2_rename(parent_ino, old_name, new_name)
     });
@@ -577,7 +537,7 @@ pub fn cmd_ext2_chmod(mode_str: &str, path: &str) {
         return;
     }
 
-    let result = with_ext2(|fs| -> Result<(), Ext2Error> {
+    let result = with_ext2(|fs| -> Result<(), FsError> {
         let ino = fs.resolve_path(path)?;
         fs.ext2_chmod(ino, mode.unwrap())
     });
@@ -597,24 +557,16 @@ pub fn cmd_ext2_chown(uid_str: &str, gid_str: &str, path: &str) {
 
     let uid = match parse_u16(uid_str) {
         Some(v) => v,
-        None => {
-            print_error!("  invalid uid '{}'", uid_str);
-            return;
-        }
+        None => { print_error!("  invalid uid '{}'", uid_str); return; }
     };
-    let gid = if gid_str.is_empty() {
-        uid
-    } else {
+    let gid = if gid_str.is_empty() { uid } else {
         match parse_u16(gid_str) {
             Some(v) => v,
-            None => {
-                print_error!("  invalid gid '{}'", gid_str);
-                return;
-            }
+            None => { print_error!("  invalid gid '{}'", gid_str); return; }
         }
     };
 
-    let result = with_ext2(|fs| -> Result<(), Ext2Error> {
+    let result = with_ext2(|fs| -> Result<(), FsError> {
         let ino = fs.resolve_path(path)?;
         fs.ext2_chown(ino, uid, gid)
     });
@@ -632,7 +584,7 @@ pub fn cmd_ext2_cp(src: &str, dst: &str) {
         return;
     }
 
-    let result = with_ext2(|fs| -> Result<u32, Ext2Error> {
+    let result = with_ext2(|fs| -> Result<u32, FsError> {
         let src_ino = fs.resolve_path(src)?;
         let (dst_parent_ino, dst_name) = resolve_parent_and_name(fs, dst)?;
         fs.ext2_copy_file(src_ino, dst_parent_ino, dst_name)
@@ -648,7 +600,7 @@ pub fn cmd_ext2_cp(src: &str, dst: &str) {
 pub fn cmd_ext2_du(path: &str) {
     let path = if path.is_empty() { "/" } else { path };
 
-    let result = with_ext2(|fs| -> Result<(u32, u64), Ext2Error> {
+    let result = with_ext2(|fs| -> Result<(u32, u64), FsError> {
         let ino = fs.resolve_path(path)?;
         fs.ext2_dir_size(ino)
     });
@@ -670,7 +622,7 @@ pub fn cmd_ext2_tree(path: &str) {
 
     let mut tree = TreeResult::new();
 
-    let result = with_ext2(|fs| -> Result<(), Ext2Error> {
+    let result = with_ext2(|fs| -> Result<(), FsError> {
         let ino = fs.resolve_path(path)?;
         fs.ext2_tree(ino, "", &mut tree)
     });
@@ -708,7 +660,9 @@ pub fn cmd_ext2_tree(path: &str) {
 }
 
 pub fn cmd_ext2_fsck() {
-    let result = with_ext2(|fs| fs.ext2_fsck());
+    let result = with_ext2(|fs| {
+        fs.ext2_fsck()
+    });
 
     match result {
         Some(r) => {
@@ -739,13 +693,7 @@ pub fn cmd_ext2_fsck() {
                 print_error!("  ERROR: {} bad group descriptors", r.bad_groups);
             }
             if r.orphan_inodes > 0 {
-                cprintln!(
-                    220,
-                    220,
-                    100,
-                    "  WARNING: {} orphan inodes",
-                    r.orphan_inodes
-                );
+                cprintln!(220, 220, 100, "  WARNING: {} orphan inodes", r.orphan_inodes);
             }
 
             if r.errors == 0 {
@@ -764,7 +712,7 @@ pub fn cmd_ext2_append(path: &str, text: &str) {
         return;
     }
 
-    let result = with_ext2(|fs| -> Result<usize, Ext2Error> {
+    let result = with_ext2(|fs| -> Result<usize, FsError> {
         let ino = fs.resolve_path(path)?;
         fs.ext2_append_file(ino, text.as_bytes())
     });
@@ -777,7 +725,9 @@ pub fn cmd_ext2_append(path: &str, text: &str) {
 }
 
 pub fn cmd_ext3_info() {
-    let result = with_ext2(|fs| fs.scan_journal());
+    let result = with_ext2(|fs| {
+        fs.scan_journal()
+    });
 
     match result {
         Some(Ok(info)) => {
@@ -787,10 +737,7 @@ pub fn cmd_ext3_info() {
             }
 
             cprintln!(57, 197, 187, "  ext3 Journal Info");
-            println!(
-                "  Version:    {}",
-                if info.version == 2 { "JBD2" } else { "JBD1" }
-            );
+            println!("  Version:    {}", if info.version == 2 { "JBD2" } else { "JBD1" });
             println!("  Block size: {} bytes", info.block_size);
             println!("  Total:      {} blocks", info.total_blocks);
             println!("  Size:        {} KB", info.journal_size / 1024);
@@ -802,17 +749,14 @@ pub fn cmd_ext3_info() {
             if info.clean {
                 print_success!("  Status:      clean");
             } else {
-                print_error!(
-                    "  Status:      dirty ({} transactions)",
-                    info.transaction_count
-                );
+                print_error!("  Status:      dirty ({} transactions)", info.transaction_count);
             }
 
             if info.errno != 0 {
                 print_error!("  Errno:       {}", info.errno);
             }
         }
-        Some(Err(Ext2Error::NoJournal)) => {
+        Some(Err(FsError::NoJournal)) => {
             print_error!("  no journal (ext2 filesystem, not ext3)");
         }
         Some(Err(e)) => print_error!("  ext3info: {:?}", e),
@@ -821,7 +765,9 @@ pub fn cmd_ext3_info() {
 }
 
 pub fn cmd_ext3_journal() {
-    let result = with_ext2(|fs| fs.scan_journal());
+    let result = with_ext2(|fs| {
+        fs.scan_journal()
+    });
 
     match result {
         Some(Ok(info)) => {
@@ -835,23 +781,8 @@ pub fn cmd_ext3_journal() {
                 return;
             }
 
-            cprintln!(
-                57,
-                197,
-                187,
-                "  Journal Transactions ({}):",
-                info.transaction_count
-            );
-            cprintln!(
-                120,
-                140,
-                140,
-                "  {:>6}  {:>8}  {:>6}  {}",
-                "SEQ",
-                "BLOCK",
-                "DATA",
-                "STATUS"
-            );
+            cprintln!(57, 197, 187, "  Journal Transactions ({}):", info.transaction_count);
+            cprintln!(120, 140, 140, "  {:>6}  {:>8}  {:>6}  {}", "SEQ", "BLOCK", "DATA", "STATUS");
 
             for i in 0..info.transaction_count {
                 let tx = &info.transactions[i];
@@ -860,29 +791,15 @@ pub fn cmd_ext3_journal() {
                 }
 
                 if tx.committed {
-                    cprintln!(
-                        100,
-                        220,
-                        150,
-                        "  {:>6}  {:>8}  {:>6}  committed",
-                        tx.sequence,
-                        tx.start_block,
-                        tx.data_blocks
-                    );
+                    cprintln!(100, 220, 150, "  {:>6}  {:>8}  {:>6}  committed",
+                        tx.sequence, tx.start_block, tx.data_blocks);
                 } else {
-                    cprintln!(
-                        255,
-                        50,
-                        50,
-                        "  {:>6}  {:>8}  {:>6}  INCOMPLETE",
-                        tx.sequence,
-                        tx.start_block,
-                        tx.data_blocks
-                    );
+                    cprintln!(255, 50, 50, "  {:>6}  {:>8}  {:>6}  INCOMPLETE",
+                        tx.sequence, tx.start_block, tx.data_blocks);
                 }
             }
         }
-        Some(Err(Ext2Error::NoJournal)) => {
+        Some(Err(FsError::NoJournal)) => {
             print_error!("  no journal (ext2 filesystem)");
         }
         Some(Err(e)) => print_error!("  ext3journal: {:?}", e),
@@ -891,21 +808,17 @@ pub fn cmd_ext3_journal() {
 }
 
 pub fn cmd_ext3_mkjournal() {
-    let result = with_ext2(|fs| -> Result<(), Ext2Error> {
-        let num_blocks = crate::fs::ext2::journal::DEFAULT_JOURNAL_BLOCKS;
-        fs.ext3_create_journal(num_blocks)
+    let result = with_ext2(|fs| -> Result<(), FsError> {
+        fs.ext3_create_journal(DEFAULT_JOURNAL_BLOCKS)
     });
 
     match result {
         Some(Ok(())) => {
-            print_success!(
-                "  ext3 journal created ({} blocks)",
-                crate::fs::ext2::journal::DEFAULT_JOURNAL_BLOCKS
-            );
+            print_success!("  ext3 journal created ({} blocks)", DEFAULT_JOURNAL_BLOCKS);
             println!("  filesystem is now ext3");
             println!("  run ext3info to verify");
         }
-        Some(Err(Ext2Error::AlreadyExists)) => {
+        Some(Err(FsError::AlreadyExists)) => {
             print_error!("  journal already exists");
         }
         Some(Err(e)) => print_error!("  ext3mkjournal: {:?}", e),
@@ -914,18 +827,22 @@ pub fn cmd_ext3_mkjournal() {
 }
 
 pub fn cmd_ext3_clean() {
-    let result = with_ext2(|fs| fs.ext3_clean_journal());
+    let result = with_ext2(|fs| {
+        fs.ext3_clean_journal()
+    });
 
     match result {
         Some(Ok(())) => print_success!("  journal marked clean"),
-        Some(Err(Ext2Error::NoJournal)) => print_error!("  no journal found"),
+        Some(Err(FsError::NoJournal)) => print_error!("  no journal found"),
         Some(Err(e)) => print_error!("  ext3clean: {:?}", e),
         None => print_error!("  ext2 not mounted"),
     }
 }
 
 pub fn cmd_ext3_recover() {
-    let result = with_ext2(|fs| fs.ext3_recover());
+    let result = with_ext2(|fs| {
+        fs.ext3_recover()
+    });
 
     match result {
         Some(Ok(n)) => {
@@ -935,7 +852,7 @@ pub fn cmd_ext3_recover() {
                 print_success!("  recovered {} blocks", n);
             }
         }
-        Some(Err(Ext2Error::NoJournal)) => print_error!("  no journal found"),
+        Some(Err(FsError::NoJournal)) => print_error!("  no journal found"),
         Some(Err(e)) => print_error!("  ext3recover: {:?}", e),
         None => print_error!("  ext2 not mounted"),
     }
