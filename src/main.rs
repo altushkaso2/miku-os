@@ -1,28 +1,22 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
-#![allow(
-    dead_code,
-    unused_imports,
-    unused_variables,
-    static_mut_refs,
-    mismatched_lifetime_syntaxes
-)]
+#![allow(dead_code, unused_imports, unused_variables, static_mut_refs, mismatched_lifetime_syntaxes)]
 
-use bootloader_api::{entry_point, BootloaderConfig};
 use core::panic::PanicInfo;
+use bootloader_api::{entry_point, BootloaderConfig};
 
-mod ata;
-mod color;
-mod commands;
 mod console;
-mod font;
-mod fs;
-mod gdt;
+mod color;
 mod interrupts;
-pub mod serial;
+mod gdt;
 mod shell;
+mod commands;
 mod vfs;
+mod ata;
+mod font;
+mod miku_extfs;
+pub mod serial;
 
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();

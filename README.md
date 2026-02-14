@@ -20,7 +20,7 @@ Powered by Rust, and a couple of developers :D
 
 ## О проекте
 
-**Miku OS** — это UNIX-подобная операционная система, разрабатываемая с нуля в режиме `no_std`.
+**Miku OS** - это UNIX-подобная операционная система, разрабатываемая с нуля в режиме `no_std`.
 Мы отказались от стандартной библиотеки (`libc`), чтобы получить полный контроль над железом и архитектурой памяти.
 
 ### Статистика
@@ -59,7 +59,7 @@ Powered by Rust, and a couple of developers :D
 
 ```bash
 # 1. Клонирование
-git clone [https://github.com/your-username/miku-os.git](https://github.com/your-username/miku-os.git)
+git clone [https://github.com/altushkaso2/miku-os]
 cd miku-os
 
 # 2. Запуск (запускается в директории builder)
