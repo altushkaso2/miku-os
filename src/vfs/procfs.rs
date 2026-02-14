@@ -1,0 +1,143 @@
+use crate::vfs::types::*;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+pub struct ProcFs;
+
+impl ProcFs {
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
+
+pub fn tick() {
+    TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn uptime_ticks() -> u64 {
+    TICK_COUNT.load(Ordering::Relaxed)
+}
+
+pub fn proc_read(name: &str, buf: &mut [u8], vnode_used: usize) -> VfsResult<usize> {
+    let mut tmp = [0u8; 192];
+    let len = match name {
+        "version" => {
+            let s = b"MikuOS v0.0.1 (x86_64)\nbuilt with love <3\n";
+            let l = s.len().min(192);
+            tmp[..l].copy_from_slice(&s[..l]);
+            l
+        }
+        "uptime" => {
+            let ticks = uptime_ticks();
+            let secs = ticks / 18;
+            let mins = secs / 60;
+            let hours = mins / 60;
+            format_uptime(&mut tmp, hours, mins % 60, secs % 60, ticks)
+        }
+        "meminfo" => format_meminfo(&mut tmp, vnode_used, MAX_VNODES, MAX_DATA_PAGES),
+        "mounts" => format_mounts(&mut tmp),
+        "cpuinfo" => {
+            let s = b"arch: x86_64\nvendor: unknown\nfeatures: vfs tmpfs devfs procfs\n";
+            let l = s.len().min(192);
+            tmp[..l].copy_from_slice(&s[..l]);
+            l
+        }
+        "stat" => format_stat(&mut tmp),
+        _ => return Err(VfsError::NotFound),
+    };
+
+    let to_copy = len.min(buf.len());
+    buf[..to_copy].copy_from_slice(&tmp[..to_copy]);
+    Ok(to_copy)
+}
+
+fn format_uptime(buf: &mut [u8; 192], hours: u64, mins: u64, secs: u64, ticks: u64) -> usize {
+    let mut pos = 0;
+    pos += write_str(buf, pos, "up ");
+    pos += write_u64(buf, pos, hours);
+    pos += write_str(buf, pos, "h ");
+    pos += write_u64(buf, pos, mins);
+    pos += write_str(buf, pos, "m ");
+    pos += write_u64(buf, pos, secs);
+    pos += write_str(buf, pos, "s (");
+    pos += write_u64(buf, pos, ticks);
+    pos += write_str(buf, pos, " ticks)\n");
+    pos
+}
+
+fn format_meminfo(
+    buf: &mut [u8; 192],
+    vnode_used: usize,
+    vnode_max: usize,
+    pages_total: usize,
+) -> usize {
+    let mut pos = 0;
+    pos += write_str(buf, pos, "vnodes: ");
+    pos += write_u64(buf, pos, vnode_used as u64);
+    pos += write_str(buf, pos, "/");
+    pos += write_u64(buf, pos, vnode_max as u64);
+    pos += write_str(buf, pos, "\npages:  ");
+    pos += write_u64(buf, pos, pages_total as u64);
+    pos += write_str(buf, pos, " total (");
+    pos += write_u64(buf, pos, (pages_total * PAGE_SIZE) as u64);
+    pos += write_str(buf, pos, " bytes)\npage_size: ");
+    pos += write_u64(buf, pos, PAGE_SIZE as u64);
+    pos += write_str(buf, pos, "\n");
+    pos
+}
+
+fn format_mounts(buf: &mut [u8; 192]) -> usize {
+    let mut pos = 0;
+    pos += write_str(buf, pos, "tmpfs on / type tmpfs (rw)\n");
+    pos += write_str(buf, pos, "devfs on /dev type devfs (rw)\n");
+    pos += write_str(buf, pos, "procfs on /proc type procfs (ro)\n");
+    pos
+}
+
+fn format_stat(buf: &mut [u8; 192]) -> usize {
+    let mut pos = 0;
+    let ticks = uptime_ticks();
+    pos += write_str(buf, pos, "ticks: ");
+    pos += write_u64(buf, pos, ticks);
+    pos += write_str(buf, pos, "\nmax_vnodes: ");
+    pos += write_u64(buf, pos, MAX_VNODES as u64);
+    pos += write_str(buf, pos, "\nmax_pages: ");
+    pos += write_u64(buf, pos, MAX_DATA_PAGES as u64);
+    pos += write_str(buf, pos, "\nmax_fds: ");
+    pos += write_u64(buf, pos, MAX_OPEN_FILES as u64);
+    pos += write_str(buf, pos, "\n");
+    pos
+}
+
+fn write_str(buf: &mut [u8; 192], pos: usize, s: &str) -> usize {
+    let b = s.as_bytes();
+    let l = b.len().min(192usize.saturating_sub(pos));
+    buf[pos..pos + l].copy_from_slice(&b[..l]);
+    l
+}
+
+fn write_u64(buf: &mut [u8; 192], pos: usize, val: u64) -> usize {
+    if val == 0 {
+        if pos < 192 {
+            buf[pos] = b'0';
+            return 1;
+        }
+        return 0;
+    }
+    let mut tmp = [0u8; 20];
+    let mut v = val;
+    let mut i = 0;
+    while v > 0 {
+        tmp[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        i += 1;
+    }
+    let l = i.min(192usize.saturating_sub(pos));
+    for j in 0..l {
+        buf[pos + j] = tmp[i - 1 - j];
+    }
+    l
+}
+
+pub const PROC_ENTRIES: &[&str] = &["version", "uptime", "meminfo", "mounts", "cpuinfo", "stat"];
