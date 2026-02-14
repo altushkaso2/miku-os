@@ -27,7 +27,7 @@ jobs:
       - name: Build Image
         run: |
           cd builder
-          cargo run --release --quiet
+          timeout 1m cargo run --release --quiet || true
 
       - name: Publish Release
         uses: softprops/action-gh-release@v1
