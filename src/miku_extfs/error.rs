@@ -1,0 +1,20 @@
+#[derive(Debug, Clone, Copy)]
+pub enum FsError {
+    BadMagic,
+    IoError,
+    UnsupportedVersion,
+    TooManyGroups,
+    InvalidInode,
+    NotDirectory,
+    NotFound,
+    CorruptedFs,
+    BufferTooSmall,
+    FileTooLarge,
+    NotRegularFile,
+    InvalidBlock,
+    NoSpace,
+    AlreadyExists,
+    NotEmpty,
+    IsDirectory,
+    NoJournal,
+}
