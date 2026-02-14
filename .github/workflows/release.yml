@@ -27,12 +27,16 @@ jobs:
       - name: Build Image
         run: |
           cd builder
-          timeout 1m cargo run --release --quiet || true
+          timeout 3m cargo run --release --quiet || true
+
+      - name: Check Artifacts
+        run: find . -name "*.img"
 
       - name: Publish Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            builder/disk.img
-            builder/miku-os/disk.img
+            **/system.img
+            **/disk.img
+          fail_on_unmatched_files: false
           generate_release_notes: true
