@@ -1,0 +1,13 @@
+target/
+logs/
+*.log
+*.img
+*.iso
+*.bin
+all_code.txt
+*.bash
+bash.bash
+test.bash
+.vscode/
+.idea/
+*.swp
