@@ -1,7 +1,11 @@
 [package]
 name = "miku-os-release"
+license = "MIT"
 version = "0.1.0"
 edition = "2021"
+authors = ["altushkaso2"]
+description = "Experimental Unix-like kernel in Rust. Implementing core subsystems including VFS, memory management, file systems, and hardware drivers entirely from scratch."
+repository = "https://github.com/altushkaso2/miku-os"
 
 [dependencies]
 bootloader_api = "0.11" 
