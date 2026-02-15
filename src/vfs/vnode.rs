@@ -60,6 +60,9 @@ pub struct VNode {
     pub mount_id: u8,
 
     pub flags: VNodeFlags,
+
+    pub ext2_ino: u32,
+    pub children_loaded: bool,
 }
 
 impl VNode {
@@ -88,6 +91,8 @@ impl VNode {
             mount_id: INVALID_U8,
             flags: VNodeFlags::empty(),
             active: false,
+            ext2_ino: 0,
+            children_loaded: false,
         }
     }
 
@@ -157,6 +162,11 @@ impl VNode {
 
     pub fn get_name(&self) -> &str {
         self.name.as_str()
+    }
+
+    #[inline]
+    pub fn is_ext2_backed(&self) -> bool {
+        self.fs_type == FsType::Ext2 && self.ext2_ino != 0
     }
 
     pub fn stat(&self) -> VNodeStat {

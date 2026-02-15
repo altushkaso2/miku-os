@@ -10,6 +10,12 @@ pub fn cmd_echo(text: &str) {
 
 pub fn cmd_info() {
     let (vn, mn) = with_vfs_ro(|v| (v.total_vnodes(), v.total_mounts()));
+    let ticks = crate::vfs::procfs::uptime_ticks();
+    let total_secs = ticks / 18;
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
+    let secs = total_secs % 60;
+
     cprintln!(57, 197, 187, "  MikuOS v0.0.1");
     cprintln!(230, 240, 240, "  VNodes: {}/{}", vn, crate::vfs::MAX_VNODES);
     cprintln!(230, 240, 240, "  Mounts: {}", mn);
@@ -17,8 +23,10 @@ pub fn cmd_info() {
         120,
         140,
         140,
-        "  Uptime: {} ticks",
-        crate::vfs::procfs::uptime_ticks()
+        "  Uptime: {}h {}m {}s",
+        hours,
+        mins,
+        secs
     );
 }
 

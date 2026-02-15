@@ -30,11 +30,11 @@ impl SyscallInterface {
         vfs.seek(fd, whence)
     }
 
-    pub fn sys_stat(vfs: &MikuVFS, cwd: usize, path: &str) -> VfsResult<VNodeStat> {
+    pub fn sys_stat(vfs: &mut MikuVFS, cwd: usize, path: &str) -> VfsResult<VNodeStat> {
         vfs.stat(cwd, path)
     }
 
-    pub fn sys_lstat(vfs: &MikuVFS, cwd: usize, path: &str) -> VfsResult<VNodeStat> {
+    pub fn sys_lstat(vfs: &mut MikuVFS, cwd: usize, path: &str) -> VfsResult<VNodeStat> {
         vfs.lstat(cwd, path)
     }
 

@@ -1,7 +1,7 @@
-use crate::{print, println, cprint, cprintln, print_error, print_success, serial_println};
 use crate::vfs::{self, FileMode, OpenFlags, VfsError, VNodeKind, MAX_CHILDREN, MAX_VNODES, with_vfs, with_vfs_ro};
 use crate::shell::SESSION;
 use crate::console;
+use crate::{print, println, cprint, cprintln, print_error, print_success, serial_println};
 
 pub fn cmd_ls(path: &str) {
     serial_println!("[ls] path={}", path);
@@ -15,12 +15,17 @@ pub fn cmd_ls(path: &str) {
     let mut err = false;
     let mut notdir = false;
 
-    with_vfs_ro(|vfs| {
+    with_vfs(|vfs| {
         let did = match vfs.resolve_path(cwd, path) {
             Ok(v) => v,
             Err(_) => { err = true; return; }
         };
         if !vfs.nodes[did].is_dir() { notdir = true; return; }
+
+        if vfs.nodes[did].fs_type == vfs::FsType::Ext2 && !vfs.nodes[did].children_loaded {
+            let _ = vfs.ext2_ensure_children_loaded(did);
+        }
+
         let eff = vfs.xm(did);
         for i in 0..MAX_CHILDREN {
             if count >= 16 { break; }
@@ -61,7 +66,7 @@ pub fn cmd_cd(arg: &str) {
         return;
     }
     let cwd = SESSION.lock().cwd;
-    let result = with_vfs_ro(|vfs| {
+    let result = with_vfs(|vfs| {
         match vfs.resolve_path(cwd, arg) {
             Ok(id) => {
                 if vfs.nodes[id].is_dir() { Ok(id) }
@@ -113,22 +118,49 @@ pub fn cmd_touch(name: &str) {
 pub fn cmd_cat(name: &str) {
     let cwd = SESSION.lock().cwd;
     with_vfs(|v| {
+        let is_dev = name.starts_with("/dev/") || name.starts_with("dev/");
+
         match v.open(cwd, name, OpenFlags(OpenFlags::READ), FileMode::default_file()) {
             Ok(fd) => {
                 let mut buf = [0u8; 64];
+                let mut total = 0usize;
+                let max_read: usize = if is_dev { 256 } else { 4096 };
                 console::set_color(230, 240, 240);
                 loop {
                     match v.read(fd, &mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
-                            let s = unsafe { core::str::from_utf8_unchecked(&buf[..n]) };
-                            print!("{}", s);
+                            if is_dev {
+                                for i in 0..n {
+                                    let b = buf[i];
+                                    let hi = b >> 4;
+                                    let lo = b & 0x0F;
+                                    let hex_hi = if hi < 10 { b'0' + hi } else { b'a' + hi - 10 };
+                                    let hex_lo = if lo < 10 { b'0' + lo } else { b'a' + lo - 10 };
+                                    print!("{}{} ", hex_hi as char, hex_lo as char);
+                                    if (total + i + 1) % 16 == 0 {
+                                        println!("");
+                                    }
+                                }
+                            } else {
+                                let s = unsafe { core::str::from_utf8_unchecked(&buf[..n]) };
+                                print!("{}", s);
+                            }
+                            total += n;
+                            if total >= max_read {
+                                break;
+                            }
                         }
                         Err(e) => { print_error!("read: {:?}", e); break; }
                     }
                 }
                 console::reset_color();
-                println!("");
+                if is_dev && total > 0 {
+                    println!("");
+                    cprintln!(120, 140, 140, "  ({} bytes)", total);
+                } else {
+                    println!("");
+                }
                 let _ = v.close(fd);
             }
             Err(e) => print_error!("cat: {:?}", e),
@@ -155,7 +187,7 @@ pub fn cmd_write(name: &str, text: &str) {
 
 pub fn cmd_stat(path: &str) {
     let cwd = SESSION.lock().cwd;
-    let result = with_vfs_ro(|v| v.lstat(cwd, path));
+    let result = with_vfs(|v| v.lstat(cwd, path));
     match result {
         Ok(st) => {
             cprintln!(128, 222, 217, "  File: {}", path);
@@ -181,7 +213,7 @@ pub fn cmd_rm(path: &str) {
 pub fn cmd_rm_rf(path: &str) {
     let cwd = SESSION.lock().cwd;
 
-    let info = with_vfs_ro(|v| {
+    let info = with_vfs(|v| {
         match v.resolve_path(cwd, path) {
             Ok(id) => Ok((id, v.nodes[id].kind)),
             Err(e) => Err(e),
@@ -213,7 +245,7 @@ fn recursive_rm(cwd: usize, path: &str) {
     let mut child_kinds: [u8; 16] = [0; 16];
     let mut child_count: usize = 0;
 
-    with_vfs_ro(|vfs| {
+    with_vfs(|vfs| {
         let did = match vfs.resolve_path(cwd, path) {
             Ok(v) => v,
             Err(_) => return,
@@ -348,20 +380,10 @@ pub fn cmd_mount_list() {
     cprintln!(230, 240, 240, "  devfs         /dev          devfs");
     cprintln!(230, 240, 240, "  procfs        /proc         procfs");
 
-    let has_ext2 = with_vfs_ro(|vfs| {
-        for i in 0..MAX_VNODES {
-            if vfs.nodes[i].active
-                && vfs.nodes[i].is_dir()
-                && vfs.nodes[i].fs_type == vfs::FsType::Ext2
-            {
-                return true;
-            }
-        }
-        false
-    });
+    let has_ext2 = with_vfs_ro(|vfs| vfs.ext2_mount_active);
 
     if has_ext2 {
-        cprintln!(230, 240, 240, "  ext2          /mnt          ext2 (ro)");
+        cprintln!(230, 240, 240, "  ext2          /mnt          ext2");
     }
 }
 
@@ -387,20 +409,11 @@ pub fn cmd_umount(path: &str) {
             return Err(VfsError::InvalidArgument);
         }
 
-        for i in 1..MAX_VNODES {
-            if vfs.nodes[i].active && vfs.nodes[i].fs_type == vfs::FsType::Ext2 && i != id {
-                let pid = vfs.nodes[i].parent as usize;
-                if pid < MAX_VNODES && vfs.nodes[pid].active {
-                    let h = vfs::hash::name_hash(vfs.nodes[i].get_name());
-                    vfs.nodes[pid].children.remove(h, i as u16);
-                }
-                vfs.free_file_pages(i);
-                vfs.nodes[i].active = false;
-            }
-        }
-
+        vfs.evict_ext2_children(id);
         vfs.nodes[id].fs_type = vfs::FsType::TmpFS;
-        vfs.nodes[id].children.clear();
+        vfs.nodes[id].ext2_ino = 0;
+        vfs.nodes[id].children_loaded = false;
+        vfs.ext2_mount_active = false;
 
         Ok(())
     });
@@ -420,167 +433,38 @@ fn mount_ext2_to_vfs(mountpoint: &str) {
         return;
     }
 
-    serial_println!("[mount] mounting ext2 at {}", mountpoint);
+    serial_println!("[mount] mounting ext2 at {} (lazy)", mountpoint);
 
     let cwd = SESSION.lock().cwd;
 
-    let mount_id = with_vfs(|vfs| {
-        match vfs.resolve_path(cwd, mountpoint) {
+    let result = with_vfs(|vfs| {
+        let mount_id = match vfs.resolve_path(cwd, mountpoint) {
             Ok(id) => {
                 if !vfs.nodes[id].is_dir() {
                     return Err(VfsError::NotDirectory);
                 }
-                Ok(id)
+                id
             }
             Err(VfsError::NotFound) => {
                 let (parent_path, dirname) = vfs::path::PathWalker::split_last(mountpoint);
                 let parent_id = vfs.resolve_path(cwd, parent_path)?;
-                vfs.mkdir(parent_id, dirname, FileMode::default_dir())
+                vfs.mkdir(parent_id, dirname, FileMode::default_dir())?
             }
-            Err(e) => Err(e),
-        }
-    });
+            Err(e) => return Err(e),
+        };
 
-    let mount_id = match mount_id {
-        Ok(id) => id,
-        Err(e) => {
-            print_error!("mount: cannot create {}: {:?}", mountpoint, e);
-            return;
-        }
-    };
+        vfs.nodes[mount_id].fs_type = vfs::FsType::Ext2;
+        vfs.nodes[mount_id].ext2_ino = EXT2_ROOT_INO;
+        vfs.nodes[mount_id].children_loaded = false;
+        vfs.ext2_mount_active = true;
 
-    let result = ext2_cmds::with_ext2_pub(|fs| {
-        populate_ext2_dir(fs, EXT2_ROOT_INO, mount_id, 0)
+        Ok(mount_id)
     });
 
     match result {
-        Some(Ok(count)) => {
-            with_vfs(|vfs| {
-                vfs.nodes[mount_id].fs_type = vfs::FsType::Ext2;
-            });
-            print_success!("  ext2 mounted at {} ({} entries)", mountpoint, count);
+        Ok(_id) => {
+            print_success!("  ext2 mounted at {} (on-demand)", mountpoint);
         }
-        Some(Err(e)) => print_error!("mount: ext2 error: {:?}", e),
-        None => print_error!("mount: ext2 not available"),
+        Err(e) => print_error!("mount: {:?}", e),
     }
-}
-
-fn populate_ext2_dir(
-    fs: &mut crate::miku_extfs::MikuFS,
-    ext2_ino: u32,
-    vfs_parent: usize,
-    depth: usize,
-) -> Result<usize, crate::miku_extfs::FsError> {
-    use crate::miku_extfs::structs as es;
-
-    if depth > 4 {
-        return Ok(0);
-    }
-
-    let inode = fs.read_inode(ext2_ino)?;
-    let mut entries = [const { es::DirEntry::empty() }; 64];
-    let count = fs.read_dir(&inode, &mut entries)?;
-
-    let mut total = 0usize;
-
-    for i in 0..count {
-        let e = &entries[i];
-        let name = e.name_str();
-
-        if name == "." || name == ".." || name == "lost+found" {
-            continue;
-        }
-
-        let entry_ino = e.inode;
-        let entry_inode = fs.read_inode(entry_ino)?;
-
-        if entry_inode.is_directory() {
-            let dir_id = with_vfs(|vfs| {
-                vfs.mkdir(vfs_parent, name, FileMode::new(entry_inode.permissions()))
-            });
-
-            match dir_id {
-                Ok(did) => {
-                    with_vfs(|vfs| {
-                        vfs.nodes[did].fs_type = vfs::FsType::Ext2;
-                    });
-                    let sub = populate_ext2_dir(fs, entry_ino, did, depth + 1)?;
-                    total += 1 + sub;
-                }
-                Err(e) => {
-                    serial_println!("[mount] skip dir '{}': {:?}", name, e);
-                }
-            }
-        } else if entry_inode.is_regular() {
-            let size = entry_inode.size();
-
-            let fid = with_vfs(|vfs| {
-                vfs.create_file(vfs_parent, name, FileMode::new(entry_inode.permissions()))
-            });
-
-            match fid {
-                Ok(fid) => {
-                    with_vfs(|vfs| {
-                        vfs.nodes[fid].fs_type = vfs::FsType::Ext2;
-                    });
-
-                    if size > 0 && size <= 6144 {
-                        let mut offset = 0u64;
-                        let mut buf = [0u8; 512];
-
-                        while offset < size {
-                            let to_read = ((size - offset) as usize).min(512);
-                            let n = match fs.read_file(&entry_inode, offset, &mut buf[..to_read]) {
-                                Ok(n) => n,
-                                Err(_) => break,
-                            };
-                            if n == 0 { break; }
-
-                            with_vfs(|vfs| {
-                                let fl = OpenFlags(OpenFlags::WRITE);
-                                if let Ok(fd) = vfs.fd_table.alloc(fid as u16, fl) {
-                                    if let Ok(f) = vfs.fd_table.get_mut(fd) {
-                                        f.offset = offset;
-                                    }
-                                    let _ = vfs.write(fd, &buf[..n]);
-                                    let _ = vfs.fd_table.close(fd);
-                                }
-                            });
-
-                            offset += n as u64;
-                        }
-                    } else if size > 6144 {
-                        with_vfs(|vfs| {
-                            vfs.nodes[fid].size = size;
-                        });
-                    }
-
-                    total += 1;
-                }
-                Err(e) => {
-                    serial_println!("[mount] skip file '{}': {:?}", name, e);
-                }
-            }
-        } else if entry_inode.is_symlink() && entry_inode.is_fast_symlink() {
-            let target_bytes = entry_inode.fast_symlink_target();
-            if let Ok(target) = core::str::from_utf8(target_bytes) {
-                let r = with_vfs(|vfs| {
-                    vfs.symlink(vfs_parent, name, target)
-                });
-                match r {
-                    Ok(sid) => {
-                        with_vfs(|vfs| {
-                            vfs.nodes[sid].fs_type = vfs::FsType::Ext2;
-                        });
-                        total += 1;
-                    }
-                    Err(e) => {
-                        serial_println!("[mount] skip symlink '{}': {:?}", name, e);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(total)
 }
