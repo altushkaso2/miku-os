@@ -38,12 +38,13 @@ pub fn proc_read(name: &str, buf: &mut [u8], vnode_used: usize) -> VfsResult<usi
         "meminfo" => format_meminfo(&mut tmp, vnode_used, MAX_VNODES, MAX_DATA_PAGES),
         "mounts" => format_mounts(&mut tmp),
         "cpuinfo" => {
-            let s = b"arch: x86_64\nvendor: unknown\nfeatures: vfs tmpfs devfs procfs\n";
+            let s = b"arch: x86_64\nvendor: unknown\nfeatures: vfs tmpfs devfs procfs ext2 ext3\n";
             let l = s.len().min(192);
             tmp[..l].copy_from_slice(&s[..l]);
             l
         }
         "stat" => format_stat(&mut tmp),
+        "heap" => format_heap(&mut tmp),
         _ => return Err(VfsError::NotFound),
     };
 
@@ -72,6 +73,10 @@ fn format_meminfo(
     vnode_max: usize,
     pages_total: usize,
 ) -> usize {
+    let heap_used = crate::allocator::used();
+    let heap_free = crate::allocator::free();
+    let heap_total = crate::allocator::HEAP_SIZE;
+
     let mut pos = 0;
     pos += write_str(buf, pos, "vnodes: ");
     pos += write_u64(buf, pos, vnode_used as u64);
@@ -79,11 +84,13 @@ fn format_meminfo(
     pos += write_u64(buf, pos, vnode_max as u64);
     pos += write_str(buf, pos, "\npages:  ");
     pos += write_u64(buf, pos, pages_total as u64);
-    pos += write_str(buf, pos, " total (");
-    pos += write_u64(buf, pos, (pages_total * PAGE_SIZE) as u64);
-    pos += write_str(buf, pos, " bytes)\npage_size: ");
-    pos += write_u64(buf, pos, PAGE_SIZE as u64);
-    pos += write_str(buf, pos, "\n");
+    pos += write_str(buf, pos, "\nheap:   ");
+    pos += write_u64(buf, pos, heap_used as u64);
+    pos += write_str(buf, pos, "/");
+    pos += write_u64(buf, pos, heap_total as u64);
+    pos += write_str(buf, pos, " (");
+    pos += write_u64(buf, pos, heap_free as u64);
+    pos += write_str(buf, pos, " free)\n");
     pos
 }
 
@@ -106,6 +113,24 @@ fn format_stat(buf: &mut [u8; 192]) -> usize {
     pos += write_u64(buf, pos, MAX_DATA_PAGES as u64);
     pos += write_str(buf, pos, "\nmax_fds: ");
     pos += write_u64(buf, pos, MAX_OPEN_FILES as u64);
+    pos += write_str(buf, pos, "\nheap_kb: ");
+    pos += write_u64(buf, pos, (crate::allocator::HEAP_SIZE / 1024) as u64);
+    pos += write_str(buf, pos, "\n");
+    pos
+}
+
+fn format_heap(buf: &mut [u8; 192]) -> usize {
+    let used = crate::allocator::used();
+    let free = crate::allocator::free();
+    let total = crate::allocator::HEAP_SIZE;
+
+    let mut pos = 0;
+    pos += write_str(buf, pos, "total: ");
+    pos += write_u64(buf, pos, total as u64);
+    pos += write_str(buf, pos, "\nused:  ");
+    pos += write_u64(buf, pos, used as u64);
+    pos += write_str(buf, pos, "\nfree:  ");
+    pos += write_u64(buf, pos, free as u64);
     pos += write_str(buf, pos, "\n");
     pos
 }
@@ -140,4 +165,4 @@ fn write_u64(buf: &mut [u8; 192], pos: usize, val: u64) -> usize {
     l
 }
 
-pub const PROC_ENTRIES: &[&str] = &["version", "uptime", "meminfo", "mounts", "cpuinfo", "stat"];
+pub const PROC_ENTRIES: &[&str] = &["version", "uptime", "meminfo", "mounts", "cpuinfo", "stat", "heap"];

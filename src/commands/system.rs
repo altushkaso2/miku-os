@@ -1,6 +1,6 @@
 use crate::shell::SHELL;
 use crate::vfs::with_vfs_ro;
-use crate::{console, cprint, cprintln, print, print_info, print_success, println};
+use crate::{allocator, console, cprint, cprintln, print, print_info, print_success, println};
 
 pub fn cmd_echo(text: &str) {
     if !text.is_empty() {
@@ -16,9 +16,15 @@ pub fn cmd_info() {
     let mins = (total_secs % 3600) / 60;
     let secs = total_secs % 60;
 
+    let heap_used = allocator::used();
+    let heap_free = allocator::free();
+    let heap_total = allocator::HEAP_SIZE;
+
     cprintln!(57, 197, 187, "  MikuOS v0.0.1");
     cprintln!(230, 240, 240, "  VNodes: {}/{}", vn, crate::vfs::MAX_VNODES);
     cprintln!(230, 240, 240, "  Mounts: {}", mn);
+    cprintln!(230, 240, 240, "  Heap:   {} / {} KB used", heap_used / 1024, heap_total / 1024);
+    cprintln!(230, 240, 240, "  Free:   {} KB", heap_free / 1024);
     cprintln!(
         120,
         140,
@@ -28,6 +34,40 @@ pub fn cmd_info() {
         mins,
         secs
     );
+}
+
+pub fn cmd_heap() {
+    let used = allocator::used();
+    let free = allocator::free();
+    let total = allocator::HEAP_SIZE;
+
+    cprintln!(57, 197, 187, "  Heap Allocator");
+    println!("  Total:  {} bytes ({} KB)", total, total / 1024);
+    println!("  Used:   {} bytes ({} KB)", used, used / 1024);
+    println!("  Free:   {} bytes ({} KB)", free, free / 1024);
+
+    let pct = if total > 0 {
+        (used * 100) / total
+    } else {
+        0
+    };
+    println!("  Usage:  {}%", pct);
+
+    if pct > 80 {
+        cprintln!(220, 220, 100, "  WARNING: heap usage high");
+    }
+}
+
+pub fn cmd_poweroff() {
+    cprintln!(255, 105, 140, "  Shutting down...");
+    crate::serial_println!("[kern] poweroff requested");
+    crate::power::shutdown();
+}
+
+pub fn cmd_reboot() {
+    cprintln!(57, 197, 187, "  Rebooting...");
+    crate::serial_println!("[kern] reboot requested");
+    crate::power::reboot();
 }
 
 pub fn cmd_help() {
@@ -48,7 +88,7 @@ pub fn cmd_help() {
         128,
         222,
         217,
-        "  df info mount umount echo clear help history"
+        "  df info mount umount echo clear help history heap"
     );
     cprintln!(128, 222, 217, "  rm -rf <path>");
     cprintln!(57, 197, 187, "  Ext2 Commands:");
@@ -71,6 +111,8 @@ pub fn cmd_help() {
     cprintln!(128, 222, 217, "  ext2du [path]            disk usage");
     cprintln!(128, 222, 217, "  ext2tree [path]          directory tree");
     cprintln!(128, 222, 217, "  ext2fsck                 check filesystem");
+    cprintln!(128, 222, 217, "  ext2cache                cache statistics");
+    cprintln!(128, 222, 217, "  ext2cacheflush           flush block cache");
     cprintln!(57, 197, 187, "  Mount:");
     cprintln!(
         128,
@@ -100,6 +142,10 @@ pub fn cmd_help() {
         217,
         "  ext3clean                mark journal clean"
     );
+    cprintln!(57, 197, 187, "  System:");
+    cprintln!(128, 222, 217, "  heap                     heap allocator info");
+    cprintln!(128, 222, 217, "  reboot                   restart system");
+    cprintln!(128, 222, 217, "  poweroff                 shutdown system");
 }
 
 pub fn cmd_clear() {

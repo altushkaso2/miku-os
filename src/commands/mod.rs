@@ -136,6 +136,9 @@ pub fn execute(input: &str) {
         "info" => system::cmd_info(),
         "help" => system::cmd_help(),
         "clear" => system::cmd_clear(),
+        "heap" => system::cmd_heap(),
+        "poweroff" | "shutdown" | "halt" => system::cmd_poweroff(),
+        "reboot" | "restart" => system::cmd_reboot(),
 
         "ext2mount" => ext2_cmds::cmd_ext2_mount(rest),
         "ext2ls" => ext2_cmds::cmd_ext2_ls(a1),
@@ -235,6 +238,8 @@ pub fn execute(input: &str) {
         "ext2du" => ext2_cmds::cmd_ext2_du(a1),
         "ext2tree" => ext2_cmds::cmd_ext2_tree(a1),
         "ext2fsck" => ext2_cmds::cmd_ext2_fsck(),
+        "ext2cache" => ext2_cmds::cmd_ext2_cache(),
+        "ext2cacheflush" => ext2_cmds::cmd_ext2_cache_flush(),
 
         "ext3mkjournal" => ext2_cmds::cmd_ext3_mkjournal(),
         "ext3info" => ext2_cmds::cmd_ext3_info(),

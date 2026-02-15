@@ -3,6 +3,8 @@
 #![feature(abi_x86_interrupt)]
 #![allow(dead_code, unused_imports, unused_variables, static_mut_refs, mismatched_lifetime_syntaxes)]
 
+extern crate alloc;
+
 use core::panic::PanicInfo;
 use bootloader_api::{entry_point, BootloaderConfig};
 
@@ -16,6 +18,8 @@ mod vfs;
 mod ata;
 mod font;
 mod miku_extfs;
+mod allocator;
+mod power;
 pub mod serial;
 
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
@@ -36,6 +40,7 @@ fn kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     serial_println!("[kern] framebuffer ok");
 
     gdt::init();
+    allocator::init();
 
     vfs::core::init_vfs();
     serial_println!("[kern] vfs ok");

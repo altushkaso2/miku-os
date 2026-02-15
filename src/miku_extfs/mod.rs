@@ -4,6 +4,7 @@ pub mod reader;
 pub mod ext2;
 pub mod ext3;
 pub mod ext4;
+pub mod cache;
 
 use crate::ata::AtaDrive;
 use structs::*;
@@ -29,6 +30,7 @@ pub struct MikuFS {
     pub txn_desc_pos: u32,
     pub txn_tags: [TxnTag; 16],
     pub txn_tag_count: u8,
+    pub block_cache: Option<cache::BlockCache>,
 }
 
 pub const MAX_DIR_ENTRIES: usize = 64;
@@ -135,6 +137,12 @@ impl MikuFS {
         block_num: u32,
         buf: &mut [u8],
     ) -> Result<(), FsError> {
+        if let Some(ref mut c) = self.block_cache {
+            if c.get(block_num, buf) {
+                return Ok(());
+            }
+        }
+
         let spb = self.sectors_per_block();
         let base_lba = self.block_to_lba(block_num);
 
@@ -146,6 +154,13 @@ impl MikuFS {
             let mut sector = [0u8; 512];
             self.reader.read_sector(base_lba + s, &mut sector)?;
             buf[offset..offset + 512].copy_from_slice(&sector);
+        }
+
+        if let Some(ref mut c) = self.block_cache {
+            let bs = self.block_size as usize;
+            if buf.len() >= bs {
+                c.put(block_num, &buf[..bs]);
+            }
         }
 
         Ok(())
@@ -174,6 +189,14 @@ impl MikuFS {
             self.reader.write_sector(base_lba + s, &sector)?;
         }
 
+        if let Some(ref mut c) = self.block_cache {
+            if data.len() >= bs {
+                c.put(block_num, &data[..bs]);
+            } else {
+                c.invalidate(block_num);
+            }
+        }
+
         Ok(())
     }
 
@@ -186,11 +209,26 @@ impl MikuFS {
             self.reader.write_sector(base_lba + s, &zero)?;
         }
 
+        if let Some(ref mut c) = self.block_cache {
+            c.invalidate(block_num);
+        }
+
         Ok(())
     }
 
     pub fn get_timestamp(&self) -> u32 {
         (crate::vfs::procfs::uptime_ticks() / 18) as u32
+    }
+
+    pub fn init_cache(&mut self) {
+        let bs = self.block_size as usize;
+        let max_cache_bytes: usize = 64 * 1024;
+        let entries = (max_cache_bytes / bs).min(32);
+        self.block_cache = Some(cache::BlockCache::new(bs, entries));
+    }
+
+    pub fn drop_cache(&mut self) {
+        self.block_cache = None;
     }
 
     pub fn fs_info(&self) -> FsInfo {
