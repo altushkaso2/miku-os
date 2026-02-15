@@ -23,6 +23,7 @@ static mut EXT2_STORAGE: MikuFS = MikuFS {
     txn_desc_pos: 0,
     txn_tags: [TxnTag { fs_block: 0, journal_pos: 0 }; 16],
     txn_tag_count: 0,
+    block_cache: None,
 };
 
 static mut EXT2_READY: bool = false;
@@ -127,6 +128,7 @@ fn try_mount(drive_index: usize) -> bool {
     unsafe {
         EXT2_READY = false;
         EXT2_STORAGE.reader = DiskReader::new(drive);
+        EXT2_STORAGE.block_cache = None;
     }
 
     let mut sector = [0u8; 512];
@@ -168,8 +170,6 @@ fn try_mount(drive_index: usize) -> bool {
     let blocks_count = unsafe { EXT2_STORAGE.superblock.blocks_count() };
     let group_count = (blocks_count + blocks_per_group - 1) / blocks_per_group;
     let gd_size = unsafe { EXT2_STORAGE.superblock.group_desc_size() } as usize;
-
-    serial_println!("[ext2] bs={} blocks={} groups={} gd_size={}", block_size, blocks_count, group_count, gd_size);
 
     if group_count as usize > 32 {
         print_error!("  ext2: too many block groups ({})", group_count);
@@ -232,9 +232,7 @@ fn try_mount(drive_index: usize) -> bool {
 
     unsafe {
         EXT2_READY = true;
-    }
-
-    unsafe {
+        EXT2_STORAGE.init_cache();
         let _ = EXT2_STORAGE.init_journal();
     }
 
@@ -248,8 +246,8 @@ fn try_mount(drive_index: usize) -> bool {
     println!("  Blocks: {} total, {} free", blocks_count, free_blocks);
     println!("  Inodes: {} total, {} free", total_inodes, free_inodes);
     println!("  Groups: {}", group_count);
+    println!("  Cache: enabled");
 
-    serial_println!("[ext2] mount complete");
     true
 }
 
@@ -816,7 +814,6 @@ pub fn cmd_ext3_mkjournal() {
         Some(Ok(())) => {
             print_success!("  ext3 journal created ({} blocks)", DEFAULT_JOURNAL_BLOCKS);
             println!("  filesystem is now ext3");
-            println!("  run ext3info to verify");
         }
         Some(Err(FsError::AlreadyExists)) => {
             print_error!("  journal already exists");
@@ -855,5 +852,43 @@ pub fn cmd_ext3_recover() {
         Some(Err(FsError::NoJournal)) => print_error!("  no journal found"),
         Some(Err(e)) => print_error!("  ext3recover: {:?}", e),
         None => print_error!("  ext2 not mounted"),
+    }
+}
+
+pub fn cmd_ext2_cache() {
+    let result = with_ext2(|fs| {
+        match &fs.block_cache {
+            Some(c) => {
+                cprintln!(57, 197, 187, "  Block Cache");
+                println!("  Entries:    {}/{}", c.cached_entries(), c.capacity());
+                println!("  Memory:     {} KB", c.total_bytes() / 1024);
+                println!("  Hits:       {}", c.hits);
+                println!("  Misses:     {}", c.misses);
+                println!("  Hit rate:   {}%", c.hit_rate());
+                println!("  Evictions:  {}", c.evictions);
+            }
+            None => {
+                print_error!("  cache not initialized");
+            }
+        }
+    });
+
+    if result.is_none() {
+        print_error!("  ext2 not mounted");
+    }
+}
+
+pub fn cmd_ext2_cache_flush() {
+    let result = with_ext2(|fs| {
+        if let Some(ref mut c) = fs.block_cache {
+            c.clear();
+            print_success!("  cache flushed");
+        } else {
+            print_error!("  cache not initialized");
+        }
+    });
+
+    if result.is_none() {
+        print_error!("  ext2 not mounted");
     }
 }

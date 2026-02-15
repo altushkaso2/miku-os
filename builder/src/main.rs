@@ -8,18 +8,18 @@ fn main() {
         .current_dir("..")
         .arg("build")
         .arg("--target").arg("x86_64-unknown-none")
-        .arg("-Z").arg("build-std=core,compiler_builtins")
+        .arg("-Z").arg("build-std=core,compiler_builtins,alloc")
         .arg("-Z").arg("build-std-features=compiler-builtins-mem")
         .status()
         .expect("Не удалось запустить cargo build");
 
     if !status.success() {
-        panic!("Ошибка компиляции ядра!");
+        panic!("Ошибка компиляции ядра");
     }
 
     let kernel_path = PathBuf::from("../target/x86_64-unknown-none/debug/miku-os-release");
     if !kernel_path.exists() {
-        panic!("Файл ядра не найден!");
+        panic!("Файл ядра не найден");
     }
 
     println!(" [2/5] Создание файловой структуры (miku-os)");
@@ -61,9 +61,9 @@ fn main() {
             panic!("Ошибка форматирования ext2!");
         }
 
-        println!("   ext2 диск успешно создан: {}", disk_path.display());
+        println!("    ext2 диск успешно создан: {}", disk_path.display());
     } else {
-        println!("   ext2 диск уже существует: {}", disk_path.display());
+        println!("    ext2 диск уже существует: {}", disk_path.display());
     }
 
     println!(" [5/5] Запуск miku-os");
