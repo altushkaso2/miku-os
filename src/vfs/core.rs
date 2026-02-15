@@ -23,7 +23,8 @@ static mut VFS_STORAGE: VfsStorage = VfsStorage {
     data: core::mem::MaybeUninit::uninit(),
 };
 
-static VFS_INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static VFS_INITIALIZED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 pub fn init_vfs() {
     crate::serial_println!("[vfs] init start");
@@ -51,6 +52,10 @@ pub fn init_vfs() {
         core::ptr::write(
             core::ptr::addr_of_mut!((*ptr).ctx),
             ProcessContext::root_context(),
+        );
+        core::ptr::write(
+            core::ptr::addr_of_mut!((*ptr).ext2_mount_active),
+            false,
         );
 
         let vfs = &mut *ptr;
@@ -91,6 +96,7 @@ pub struct MikuVFS {
     pub mounts: MountTable,
     pub fd_table: FdTable,
     pub ctx: ProcessContext,
+    pub ext2_mount_active: bool,
 }
 
 impl MikuVFS {
@@ -255,7 +261,7 @@ impl MikuVFS {
         procfs::uptime_ticks()
     }
 
-    fn alloc_vnode(&mut self) -> VfsResult<usize> {
+    pub fn alloc_vnode(&mut self) -> VfsResult<usize> {
         for i in 1..MAX_VNODES {
             if !self.nodes[i].active {
                 return Ok(i);
@@ -269,18 +275,328 @@ impl MikuVFS {
         id < MAX_VNODES && self.nodes[id].active
     }
 
-    pub fn resolve_path(&self, cwd: usize, path: &str) -> VfsResult<usize> {
-        PathWalker::resolve(&self.nodes, cwd, path)
+    pub fn resolve_path(&mut self, cwd: usize, path: &str) -> VfsResult<usize> {
+        let path = path.trim();
+        if path.is_empty() {
+            return Ok(cwd);
+        }
+
+        let mut current = if path.starts_with('/') { 0 } else { cwd };
+        let mut depth = 0u8;
+
+        for component in path.split('/') {
+            if component.is_empty() || component == "." {
+                continue;
+            }
+            if component == ".." {
+                let p = self.nodes[current].parent;
+                if p != INVALID_ID {
+                    current = p as usize;
+                }
+                continue;
+            }
+
+            depth += 1;
+            if depth as usize > MAX_PATH_DEPTH {
+                return Err(VfsError::InvalidPath);
+            }
+
+            if !self.nodes[current].is_dir() {
+                return Err(VfsError::NotDirectory);
+            }
+
+            let eff = self.xm(current);
+            current = self.lookup_child_or_load(eff, component)?;
+
+            if self.nodes[current].is_symlink() {
+                current = self.follow_symlink(current, 0)?;
+            }
+        }
+        Ok(current)
     }
 
-    pub fn resolve_path_follow(&self, cwd: usize, path: &str) -> VfsResult<usize> {
+    fn follow_symlink(&mut self, link_id: usize, depth: usize) -> VfsResult<usize> {
+        if depth >= MAX_SYMLINK_DEPTH {
+            return Err(VfsError::TooManySymlinks);
+        }
+        if !self.nodes[link_id].is_symlink() {
+            return Ok(link_id);
+        }
+
+        let mut target_buf = [0u8; NAME_LEN];
+        let target_len = self.nodes[link_id].symlink_target.len as usize;
+        target_buf[..target_len]
+            .copy_from_slice(&self.nodes[link_id].symlink_target.data[..target_len]);
+
+        let parent = self.nodes[link_id].parent as usize;
+        let start = if target_len > 0 && target_buf[0] == b'/' {
+            0
+        } else {
+            parent
+        };
+
+        let target_str =
+            unsafe { core::str::from_utf8_unchecked(&target_buf[..target_len]) };
+
+        let mut current = start;
+        for component in target_str.split('/') {
+            if component.is_empty() || component == "." {
+                continue;
+            }
+            if component == ".." {
+                let p = self.nodes[current].parent;
+                if p != INVALID_ID {
+                    current = p as usize;
+                }
+                continue;
+            }
+            if !self.nodes[current].is_dir() {
+                return Err(VfsError::NotDirectory);
+            }
+            let eff = self.xm(current);
+            current = self.lookup_child_or_load(eff, component)?;
+            if self.nodes[current].is_symlink() {
+                current = self.follow_symlink(current, depth + 1)?;
+            }
+        }
+        Ok(current)
+    }
+
+    fn lookup_child_or_load(&mut self, parent: usize, name: &str) -> VfsResult<usize> {
+        let h = name_hash(name);
+        for candidate_id in self.nodes[parent].children.find_by_hash(h) {
+            let cid = candidate_id as usize;
+            if cid < MAX_VNODES && self.nodes[cid].active && self.nodes[cid].name_eq(name) {
+                return Ok(cid);
+            }
+        }
+
+        if self.nodes[parent].fs_type == FsType::Ext2 && self.nodes[parent].ext2_ino != 0 {
+            return self.ext2_lazy_lookup(parent, name);
+        }
+
+        Err(VfsError::NotFound)
+    }
+
+    fn ext2_lazy_lookup(&mut self, parent_vnode: usize, name: &str) -> VfsResult<usize> {
+        if !self.ext2_mount_active {
+            return Err(VfsError::NotFound);
+        }
+
+        let parent_ext2_ino = self.nodes[parent_vnode].ext2_ino;
+        if parent_ext2_ino == 0 {
+            return Err(VfsError::NotFound);
+        }
+
+        let result = crate::commands::ext2_cmds::with_ext2_pub(|fs| {
+            let child_ino = match fs.ext2_lookup_in_dir(parent_ext2_ino, name) {
+                Ok(Some(ino)) => ino,
+                Ok(None) => return Err(VfsError::NotFound),
+                Err(_) => return Err(VfsError::IoError),
+            };
+
+            let inode = match fs.read_inode(child_ino) {
+                Ok(i) => i,
+                Err(_) => return Err(VfsError::IoError),
+            };
+
+            let kind = if inode.is_directory() {
+                VNodeKind::Directory
+            } else if inode.is_symlink() {
+                VNodeKind::Symlink
+            } else {
+                VNodeKind::Regular
+            };
+
+            let perm = inode.permissions();
+            let size = inode.size();
+            let uid = inode.uid();
+            let gid = inode.gid();
+            let nlinks = inode.links_count();
+
+            let mut symlink_target = [0u8; NAME_LEN];
+            let mut symlink_len = 0u8;
+            if inode.is_symlink() && inode.is_fast_symlink() {
+                let target = inode.fast_symlink_target();
+                let l = target.len().min(NAME_LEN);
+                symlink_target[..l].copy_from_slice(&target[..l]);
+                symlink_len = l as u8;
+            }
+
+            Ok((child_ino, kind, perm, size, uid, gid, nlinks, symlink_target, symlink_len))
+        });
+
+        let info = match result {
+            Some(Ok(info)) => info,
+            Some(Err(e)) => return Err(e),
+            None => return Err(VfsError::NotFound),
+        };
+
+        let (child_ino, kind, perm, size, uid, gid, nlinks, symlink_target, symlink_len) = info;
+
+        let id = self.alloc_vnode()?;
+        let ts = self.now();
+
+        self.nodes[id].init(
+            id as InodeId,
+            parent_vnode as InodeId,
+            name,
+            kind,
+            FsType::Ext2,
+            FileMode::new(perm),
+            uid,
+            gid,
+            ts,
+        );
+        self.nodes[id].ext2_ino = child_ino;
+        self.nodes[id].size = size;
+        self.nodes[id].nlinks = nlinks;
+        self.nodes[id].children_loaded = false;
+
+        if kind == VNodeKind::Symlink && symlink_len > 0 {
+            self.nodes[id].symlink_target.data[..symlink_len as usize]
+                .copy_from_slice(&symlink_target[..symlink_len as usize]);
+            self.nodes[id].symlink_target.len = symlink_len;
+        }
+
+        self.nodes[parent_vnode]
+            .children
+            .insert(name, id as InodeId);
+
+        crate::serial_println!(
+            "[vfs] ext2 lazy load: '{}' ino={} -> vnode={}",
+            name,
+            child_ino,
+            id
+        );
+
+        Ok(id)
+    }
+
+    pub fn ext2_ensure_children_loaded(&mut self, dir_vnode: usize) -> VfsResult<()> {
+        if !self.nodes[dir_vnode].is_dir() {
+            return Err(VfsError::NotDirectory);
+        }
+        if self.nodes[dir_vnode].fs_type != FsType::Ext2 {
+            return Ok(());
+        }
+        if self.nodes[dir_vnode].children_loaded {
+            return Ok(());
+        }
+        if self.nodes[dir_vnode].ext2_ino == 0 {
+            return Ok(());
+        }
+
+        let ext2_ino = self.nodes[dir_vnode].ext2_ino;
+
+        struct ChildInfo {
+            name: [u8; 255],
+            name_len: u8,
+            ino: u32,
+            file_type: u8,
+        }
+
+        let mut child_infos: [ChildInfo; 48] = unsafe { core::mem::zeroed() };
+        let mut child_count = 0usize;
+
+        let result = crate::commands::ext2_cmds::with_ext2_pub(|fs| {
+            let inode = fs.read_inode(ext2_ino).map_err(|_| VfsError::IoError)?;
+            let mut entries =
+                [const { crate::miku_extfs::structs::DirEntry::empty() }; 64];
+            let count = fs.read_dir(&inode, &mut entries).map_err(|_| VfsError::IoError)?;
+
+            for i in 0..count {
+                let e = &entries[i];
+                let n = e.name_str();
+                if n == "." || n == ".." || n == "lost+found" {
+                    continue;
+                }
+                if child_count >= 48 {
+                    break;
+                }
+                let nb = n.as_bytes();
+                let l = nb.len().min(255);
+                child_infos[child_count].name[..l].copy_from_slice(&nb[..l]);
+                child_infos[child_count].name_len = l as u8;
+                child_infos[child_count].ino = e.inode;
+                child_infos[child_count].file_type = e.file_type;
+                child_count += 1;
+            }
+            Ok::<(), VfsError>(())
+        });
+
+        match result {
+            Some(Ok(())) => {}
+            Some(Err(_)) => return Err(VfsError::IoError),
+            None => return Err(VfsError::NotFound),
+        }
+
+        for i in 0..child_count {
+            let ci = &child_infos[i];
+            let name_str = unsafe {
+                core::str::from_utf8_unchecked(
+                    &ci.name[..ci.name_len as usize],
+                )
+            };
+
+            let h = name_hash(name_str);
+            let mut already = false;
+            for cid in self.nodes[dir_vnode].children.find_by_hash(h) {
+                let c = cid as usize;
+                if c < MAX_VNODES && self.nodes[c].active && self.nodes[c].name_eq(name_str) {
+                    already = true;
+                    break;
+                }
+            }
+            if already {
+                continue;
+            }
+
+            if let Ok(id) = self.alloc_vnode() {
+                let kind = match ci.file_type {
+                    2 => VNodeKind::Directory,
+                    7 => VNodeKind::Symlink,
+                    _ => VNodeKind::Regular,
+                };
+
+                let ts = self.now();
+                self.nodes[id].init(
+                    id as InodeId,
+                    dir_vnode as InodeId,
+                    name_str,
+                    kind,
+                    FsType::Ext2,
+                    FileMode::new(0o755),
+                    0,
+                    0,
+                    ts,
+                );
+                self.nodes[id].ext2_ino = ci.ino;
+                self.nodes[id].children_loaded = false;
+
+                self.nodes[dir_vnode]
+                    .children
+                    .insert(name_str, id as InodeId);
+            }
+        }
+
+        self.nodes[dir_vnode].children_loaded = true;
+        Ok(())
+    }
+
+    pub fn resolve_path_follow(&mut self, cwd: usize, path: &str) -> VfsResult<usize> {
         let mut id = self.resolve_path(cwd, path)?;
         let mut depth = 0;
         while self.nodes[id].is_symlink() {
             if depth >= MAX_SYMLINK_DEPTH {
                 return Err(VfsError::TooManySymlinks);
             }
-            let target = self.nodes[id].symlink_target.as_str();
+            let mut target_buf = [0u8; NAME_LEN];
+            let tlen = self.nodes[id].symlink_target.len as usize;
+            target_buf[..tlen]
+                .copy_from_slice(&self.nodes[id].symlink_target.data[..tlen]);
+            let target =
+                unsafe { core::str::from_utf8_unchecked(&target_buf[..tlen]) };
             if target.is_empty() {
                 return Err(VfsError::InvalidPath);
             }
@@ -312,7 +628,7 @@ impl MikuVFS {
         }
     }
 
-    fn split_path<'a>(&self, cwd: usize, path: &'a str) -> VfsResult<(usize, &'a str)> {
+    fn split_path<'a>(&mut self, cwd: usize, path: &'a str) -> VfsResult<(usize, &'a str)> {
         match path.rfind('/') {
             Some(pos) => {
                 let name = &path[pos + 1..];
@@ -456,6 +772,45 @@ impl MikuVFS {
         let eff = self.effective_node(id);
         self.nodes[eff].children.is_empty()
     }
+
+    pub(crate) fn evict_ext2_children(&mut self, dir_id: usize) {
+        let mut to_evict = [INVALID_ID; MAX_CHILDREN];
+        let mut evict_count = 0;
+
+        for i in 0..MAX_CHILDREN {
+            if !self.nodes[dir_id].children.slots[i].used() {
+                continue;
+            }
+            let cid = self.nodes[dir_id].children.slots[i].id as usize;
+            if cid >= MAX_VNODES || !self.nodes[cid].active {
+                continue;
+            }
+            if self.nodes[cid].fs_type != FsType::Ext2 {
+                continue;
+            }
+            if self.nodes[cid].refcount > 0 {
+                continue;
+            }
+            if evict_count < MAX_CHILDREN {
+                to_evict[evict_count] = cid as InodeId;
+                evict_count += 1;
+            }
+        }
+
+        for i in 0..evict_count {
+            let cid = to_evict[i] as usize;
+            if cid < MAX_VNODES && self.nodes[cid].active {
+                if self.nodes[cid].is_dir() {
+                    self.evict_ext2_children(cid);
+                }
+                let h = name_hash(self.nodes[cid].get_name());
+                self.nodes[dir_id].children.remove(h, cid as InodeId);
+                self.nodes[cid].active = false;
+            }
+        }
+
+        self.nodes[dir_id].children_loaded = false;
+    }
 }
 
 impl MikuVFS {
@@ -531,15 +886,19 @@ impl MikuVFS {
         self.nodes[id].active = false;
 
         crate::serial_println!("[vfs] rmdir '{}' id={}", path, id);
-        Ok(())
+        Ok::<(), VfsError>(())
     }
 
-    pub fn readdir(&self, dir_id: usize, entries: &mut [DirEntry]) -> VfsResult<usize> {
+    pub fn readdir(&mut self, dir_id: usize, entries: &mut [DirEntry]) -> VfsResult<usize> {
         if !self.valid_vnode(dir_id) {
             return Err(VfsError::NotFound);
         }
         if !self.nodes[dir_id].is_dir() {
             return Err(VfsError::NotDirectory);
+        }
+
+        if self.nodes[dir_id].fs_type == FsType::Ext2 && !self.nodes[dir_id].children_loaded {
+            self.ext2_ensure_children_loaded(dir_id)?;
         }
 
         let eff = self.effective_node(dir_id);
@@ -655,7 +1014,7 @@ impl MikuVFS {
     }
 
     pub fn readlink(&self, cwd: usize, path: &str) -> VfsResult<NameBuf> {
-        let id = self.resolve_path(cwd, path)?;
+        let id = PathWalker::resolve(&self.nodes, cwd, path)?;
         if !self.nodes[id].is_symlink() {
             return Err(VfsError::NotSymlink);
         }
@@ -826,6 +1185,10 @@ impl MikuVFS {
             return Err(VfsError::IsDirectory);
         }
 
+        if self.nodes[vid].is_ext2_backed() {
+            return self.read_ext2_file(fd, vid, offset, buf);
+        }
+
         let size = self.nodes[vid].size;
         if offset >= size {
             return Ok(0);
@@ -865,6 +1228,41 @@ impl MikuVFS {
         Ok(done)
     }
 
+    fn read_ext2_file(
+        &mut self,
+        fd: usize,
+        vid: usize,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> VfsResult<usize> {
+        let ext2_ino = self.nodes[vid].ext2_ino;
+        let size = self.nodes[vid].size;
+
+        if offset >= size {
+            return Ok(0);
+        }
+
+        let avail = (size - offset) as usize;
+        let to_read = buf.len().min(avail);
+
+        let result = crate::commands::ext2_cmds::with_ext2_pub(|fs| {
+            let inode = fs.read_inode(ext2_ino).map_err(|_| VfsError::IoError)?;
+            let n = fs
+                .read_file(&inode, offset, &mut buf[..to_read])
+                .map_err(|_| VfsError::IoError)?;
+            Ok(n)
+        });
+
+        let n = match result {
+            Some(Ok(n)) => n,
+            Some(Err(e)) => return Err(e),
+            None => return Err(VfsError::IoError),
+        };
+
+        self.fd_table.get_mut(fd)?.offset += n as u64;
+        Ok(n)
+    }
+
     fn read_procfs(
         &mut self,
         fd: usize,
@@ -876,7 +1274,8 @@ impl MikuVFS {
         let name_bytes = self.nodes[vid].get_name().as_bytes();
         let name_len = name_bytes.len().min(NAME_LEN);
         name_copy[..name_len].copy_from_slice(&name_bytes[..name_len]);
-        let name_str = unsafe { core::str::from_utf8_unchecked(&name_copy[..name_len]) };
+        let name_str =
+            unsafe { core::str::from_utf8_unchecked(&name_copy[..name_len]) };
 
         let vnode_used = self.total_vnodes();
         let mut proc_buf = [0u8; 192];
@@ -1106,12 +1505,12 @@ impl MikuVFS {
 }
 
 impl MikuVFS {
-    pub fn stat(&self, cwd: usize, path: &str) -> VfsResult<VNodeStat> {
+    pub fn stat(&mut self, cwd: usize, path: &str) -> VfsResult<VNodeStat> {
         let id = self.resolve_path_follow(cwd, path)?;
         Ok(self.nodes[id].stat())
     }
 
-    pub fn lstat(&self, cwd: usize, path: &str) -> VfsResult<VNodeStat> {
+    pub fn lstat(&mut self, cwd: usize, path: &str) -> VfsResult<VNodeStat> {
         let id = self.resolve_path(cwd, path)?;
         Ok(self.nodes[id].stat())
     }
@@ -1214,7 +1613,7 @@ impl MikuVFS {
 
 impl MikuVFS {
     pub fn statfs(&self, cwd: usize, path: &str) -> VfsResult<StatFs> {
-        let id = self.resolve_path(cwd, path)?;
+        let id = PathWalker::resolve(&self.nodes, cwd, path)?;
         let fs = self.nodes[id].fs_type;
 
         let total_inodes = MAX_VNODES as u64;

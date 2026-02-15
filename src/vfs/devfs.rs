@@ -67,20 +67,22 @@ fn next_random() -> u8 {
     state as u8
 }
 
-pub fn dev_read(dev_type: DevType, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
+pub fn dev_read(dev_type: DevType, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
     match dev_type {
         DevType::Null => Ok(0),
         DevType::Zero => {
-            for b in buf.iter_mut() {
-                *b = 0;
+            let limit = buf.len().min(64);
+            for i in 0..limit {
+                buf[i] = 0;
             }
-            Ok(buf.len())
+            Ok(limit)
         }
         DevType::Random => {
-            for b in buf.iter_mut() {
-                *b = next_random();
+            let limit = buf.len().min(64);
+            for i in 0..limit {
+                buf[i] = next_random();
             }
-            Ok(buf.len())
+            Ok(limit)
         }
         DevType::Console => Ok(0),
     }

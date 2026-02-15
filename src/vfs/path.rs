@@ -1,3 +1,6 @@
+// ==========================================
+// FILE: src/vfs/path.rs
+// ==========================================
 use crate::vfs::hash::name_hash;
 use crate::vfs::types::*;
 
