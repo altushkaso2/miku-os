@@ -107,10 +107,7 @@ impl MikuFS {
             }
             if component == ".." {
                 let inode = self.read_inode(current_ino)?;
-                match self.lookup(&inode, "..") {
-                    Ok(parent_ino) => current_ino = parent_ino,
-                    Err(_) => {}
-                }
+                current_ino = self.lookup(&inode, "..")?;
                 continue;
             }
 
@@ -124,4 +121,4 @@ impl MikuFS {
 
         Ok(current_ino)
     }
-}
+} 

@@ -5,36 +5,36 @@ use crate::vfs::types::*;
 pub enum JournalOp {
     CreateFile = 1,
     DeleteFile = 2,
-    WriteData = 3,
-    CreateDir = 4,
-    DeleteDir = 5,
-    Rename = 6,
-    SetAttr = 7,
-    Link = 8,
-    Symlink = 9,
+    WriteData  = 3,
+    CreateDir  = 4,
+    DeleteDir  = 5,
+    Rename     = 6,
+    SetAttr    = 7,
+    Link       = 8,
+    Symlink    = 9,
 }
 
 #[derive(Clone, Copy)]
 pub struct JournalEntry {
-    pub op: JournalOp,
-    pub vnode_id: InodeId,
+    pub op:        JournalOp,
+    pub vnode_id:  InodeId,
     pub parent_id: InodeId,
-    pub name: NameBuf,
+    pub name:      NameBuf,
     pub timestamp: Timestamp,
     pub committed: bool,
-    pub active: bool,
+    pub active:    bool,
 }
 
 impl JournalEntry {
     pub const fn empty() -> Self {
         Self {
-            op: JournalOp::CreateFile,
-            vnode_id: INVALID_ID,
+            op:        JournalOp::CreateFile,
+            vnode_id:  INVALID_ID,
             parent_id: INVALID_ID,
-            name: NameBuf::empty(),
+            name:      NameBuf::empty(),
             timestamp: 0,
             committed: false,
-            active: false,
+            active:    false,
         }
     }
 }
@@ -48,19 +48,19 @@ pub enum JournalState {
 }
 
 pub struct Journal {
-    pub entries: [JournalEntry; MAX_JOURNAL_BLOCKS],
+    pub entries:   [JournalEntry; MAX_JOURNAL_BLOCKS],
     pub write_pos: usize,
-    pub state: JournalState,
-    pub sequence: u64,
+    pub state:     JournalState,
+    pub sequence:  u64,
 }
 
 impl Journal {
     pub const fn new() -> Self {
         Self {
-            entries: [JournalEntry::empty(); MAX_JOURNAL_BLOCKS],
+            entries:   [JournalEntry::empty(); MAX_JOURNAL_BLOCKS],
             write_pos: 0,
-            state: JournalState::Idle,
-            sequence: 0,
+            state:     JournalState::Idle,
+            sequence:  0,
         }
     }
 
@@ -74,10 +74,10 @@ impl Journal {
 
     pub fn record(
         &mut self,
-        op: JournalOp,
-        vnode_id: InodeId,
+        op:        JournalOp,
+        vnode_id:  InodeId,
         parent_id: InodeId,
-        name: &str,
+        name:      &str,
         timestamp: Timestamp,
     ) -> VfsResult<()> {
         if self.state != JournalState::Recording {
@@ -116,17 +116,17 @@ impl Journal {
     }
 
     pub fn abort(&mut self) {
-        // Remove uncommitted entries (ndt)
-        for entry in self.entries.iter_mut() {
-            if entry.active && !entry.committed {
-                *entry = JournalEntry::empty();
-            }
+    let mut removed = 0usize;
+    for entry in self.entries.iter_mut() {
+        if entry.active && !entry.committed {
+            *entry = JournalEntry::empty();
+            removed += 1;
         }
-        if self.write_pos > 0 {
-            self.write_pos -= 1;
-        }
-        self.state = JournalState::Idle;
     }
+
+    self.write_pos = self.write_pos.saturating_sub(removed);
+    self.state = JournalState::Idle;
+}
 
     pub fn clear(&mut self) {
         for entry in self.entries.iter_mut() {
@@ -138,5 +138,12 @@ impl Journal {
 
     pub fn entry_count(&self) -> usize {
         self.entries.iter().filter(|e| e.active).count()
+    }
+
+    pub fn pending_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| e.active && !e.committed)
+            .count()
     }
 }

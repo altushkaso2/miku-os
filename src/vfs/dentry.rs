@@ -40,39 +40,60 @@ impl DentryCache {
     }
 
     pub fn lookup(&mut self, parent: InodeId, name: &str) -> Option<InodeId> {
-        let h = dentry_hash(parent, name);
-        let start = (h as usize) % MAX_DENTRIES;
+    let h = dentry_hash(parent, name);
+    let start = (h as usize) % MAX_DENTRIES;
 
-        for i in 0..MAX_DENTRIES {
-            let idx = (start + i) % MAX_DENTRIES;
-            let entry = &self.entries[idx];
-            if !entry.valid {
+    for i in 0..MAX_DENTRIES {
+        let idx = (start + i) % MAX_DENTRIES;
+        let entry = &self.entries[idx];
+        if !entry.valid {
+            if entry.hash == 0 && entry.parent_id == INVALID_ID {
                 break;
             }
-            if entry.hash == h && entry.parent_id == parent && entry.name.eq_str(name) {
-                self.hits += 1;
-                if entry.negative {
-                    return None;
-                }
-                return Some(entry.child_id);
-            }
+            continue;
         }
-        self.misses += 1;
-        None
+        if entry.hash == h && entry.parent_id == parent && entry.name.eq_str(name) {
+            self.hits += 1;
+            if entry.negative {
+                return None;
+            }
+            return Some(entry.child_id);
+        }
+    }
+    self.misses += 1;
+    None
+}
+
+pub fn insert(&mut self, parent: InodeId, name: &str, child: InodeId) {
+    let h = dentry_hash(parent, name);
+    let start = (h as usize) % MAX_DENTRIES;
+
+    let mut target = None;
+    for i in 0..MAX_DENTRIES {
+        let idx = (start + i) % MAX_DENTRIES;
+        if !self.entries[idx].valid {
+            target = Some(idx);
+            break;
+        }
+        if self.entries[idx].hash == h
+            && self.entries[idx].parent_id == parent
+            && self.entries[idx].name.eq_str(name)
+        {
+            target = Some(idx);
+            break;
+        }
     }
 
-    pub fn insert(&mut self, parent: InodeId, name: &str, child: InodeId) {
-        let h = dentry_hash(parent, name);
-        let idx = (h as usize) % MAX_DENTRIES;
-        self.entries[idx] = DentryCacheEntry {
-            parent_id: parent,
-            child_id: child,
-            hash: h,
-            name: NameBuf::from_str(name),
-            valid: true,
-            negative: false,
-        };
-    }
+    let idx = target.unwrap_or((h as usize) % MAX_DENTRIES);
+    self.entries[idx] = DentryCacheEntry {
+        parent_id: parent,
+        child_id: child,
+        hash: h,
+        name: NameBuf::from_str(name),
+        valid: true,
+        negative: false,
+    };
+}
 
     pub fn insert_negative(&mut self, parent: InodeId, name: &str) {
         let h = dentry_hash(parent, name);
@@ -88,22 +109,25 @@ impl DentryCache {
     }
 
     pub fn invalidate(&mut self, parent: InodeId, name: &str) {
-        let h = dentry_hash(parent, name);
-        let start = (h as usize) % MAX_DENTRIES;
-        for i in 0..MAX_DENTRIES {
-            let idx = (start + i) % MAX_DENTRIES;
-            if !self.entries[idx].valid {
+    let h = dentry_hash(parent, name);
+    let start = (h as usize) % MAX_DENTRIES;
+    for i in 0..MAX_DENTRIES {
+        let idx = (start + i) % MAX_DENTRIES;
+        if !self.entries[idx].valid {
+            if self.entries[idx].hash == 0 {
                 break;
             }
-            if self.entries[idx].hash == h
-                && self.entries[idx].parent_id == parent
-                && self.entries[idx].name.eq_str(name)
-            {
-                self.entries[idx].valid = false;
-                return;
-            }
+            continue;
+        }
+        if self.entries[idx].hash == h
+            && self.entries[idx].parent_id == parent
+            && self.entries[idx].name.eq_str(name)
+        {
+            self.entries[idx].valid = false;
+            return;
         }
     }
+}
 
     pub fn invalidate_all_for(&mut self, vnode_id: InodeId) {
         for entry in self.entries.iter_mut() {

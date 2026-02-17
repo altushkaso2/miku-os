@@ -17,4 +17,13 @@ pub enum FsError {
     NotEmpty,
     IsDirectory,
     NoJournal,
+    ExtentFull,
+    ChecksumError,
+    InlineTooBig,
+    UnsupportedFeature,
+    ReadOnlyFs,
+    InvalidExtent,
+    JournalFull,
+    NotSymlink,
+    LinkLoop,
 }

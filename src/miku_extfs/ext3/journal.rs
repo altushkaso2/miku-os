@@ -163,31 +163,24 @@ impl MikuFS {
         if !self.has_journal() {
             return Err(FsError::NoJournal);
         }
-
         let disk_block = self.journal_block_to_disk(0)?;
         if disk_block == 0 {
             return Err(FsError::CorruptedFs);
         }
-
         let mut jsb = JournalSuperblock::zeroed();
         let bs = self.block_size as usize;
         let mut buf = [0u8; 4096];
         self.read_block_into(disk_block, &mut buf[..bs])?;
-
         let copy_size = bs.min(1024);
         jsb.data[..copy_size].copy_from_slice(&buf[..copy_size]);
-
         if !jsb.is_valid() {
             return Err(FsError::CorruptedFs);
         }
-
         Ok(jsb)
     }
 
     pub fn read_journal_block_data(
-        &mut self,
-        journal_block: u32,
-        buf: &mut [u8],
+        &mut self, journal_block: u32, buf: &mut [u8],
     ) -> Result<(), FsError> {
         let disk_block = self.journal_block_to_disk(journal_block)?;
         if disk_block == 0 {
@@ -201,7 +194,6 @@ impl MikuFS {
             self.journal_active = false;
             return Ok(());
         }
-
         let jsb = self.read_journal_superblock()?;
         self.journal_seq = jsb.start_sequence();
         self.journal_maxlen = jsb.maxlen();
@@ -209,16 +201,14 @@ impl MikuFS {
         self.journal_active = true;
         self.txn_active = false;
         self.txn_tag_count = 0;
-
+        self.txn_revoke_count = 0;
         if jsb.is_clean() {
             self.journal_pos = jsb.first();
         } else {
             self.journal_pos = jsb.start();
         }
-
         crate::serial_println!("[ext3] journal init: seq={} pos={} max={} active=true",
             self.journal_seq, self.journal_pos, self.journal_maxlen);
-
         Ok(())
     }
 
@@ -238,12 +228,11 @@ impl MikuFS {
         if self.txn_active {
             return Ok(());
         }
-
         self.txn_active = true;
         self.txn_desc_pos = self.journal_pos;
         self.journal_pos = self.advance_journal_pos(self.journal_pos);
         self.txn_tag_count = 0;
-
+        self.txn_revoke_count = 0;
         Ok(())
     }
 
@@ -251,36 +240,29 @@ impl MikuFS {
         if !self.journal_active || !self.txn_active {
             return Ok(());
         }
-
         if self.txn_tag_count >= 16 {
             return Ok(());
         }
-
         for i in 0..self.txn_tag_count as usize {
             if self.txn_tags[i].fs_block == fs_block {
                 return Ok(());
             }
         }
-
         let bs = self.block_size as usize;
         let mut buf = [0u8; 4096];
         self.read_block_into(fs_block, &mut buf[..bs])?;
-
         let journal_disk_block = self.journal_block_to_disk(self.journal_pos)?;
         if journal_disk_block == 0 {
             return Err(FsError::CorruptedFs);
         }
         self.write_block_data(journal_disk_block, &buf[..bs])?;
-
         let idx = self.txn_tag_count as usize;
         self.txn_tags[idx] = TxnTag {
             fs_block,
             journal_pos: self.journal_pos,
         };
         self.txn_tag_count += 1;
-
         self.journal_pos = self.advance_journal_pos(self.journal_pos);
-
         Ok(())
     }
 
@@ -288,20 +270,18 @@ impl MikuFS {
         if !self.journal_active || !self.txn_active {
             return Ok(());
         }
-
         let tag_count = self.txn_tag_count as usize;
         if tag_count == 0 {
             self.txn_active = false;
+            self.txn_revoke_count = 0;
             return Ok(());
         }
-
         let bs = self.block_size as usize;
 
         let mut desc = [0u8; 4096];
         desc[0..4].copy_from_slice(&JBD_MAGIC.to_be_bytes());
         desc[4..8].copy_from_slice(&JBD_DESCRIPTOR_BLOCK.to_be_bytes());
         desc[8..12].copy_from_slice(&self.journal_seq.to_be_bytes());
-
         let mut offset = 12;
         for i in 0..tag_count {
             let tag_block = self.txn_tags[i].fs_block;
@@ -313,34 +293,44 @@ impl MikuFS {
             desc[offset + 4..offset + 8].copy_from_slice(&flags.to_be_bytes());
             offset += 8;
         }
-
         let desc_disk_block = self.journal_block_to_disk(self.txn_desc_pos)?;
         self.write_block_data(desc_disk_block, &desc[..bs])?;
+
+        for i in 0..tag_count {
+            let (fs_block, journal_pos) = {
+                let tag = &self.txn_tags[i];
+                (tag.fs_block, tag.journal_pos)
+            };
+            
+            let mut buf = [0u8; 4096];
+            self.read_block_into(fs_block, &mut buf[..bs])?;
+            
+            let journal_disk_block = self.journal_block_to_disk(journal_pos)?;
+            self.write_block_data(journal_disk_block, &buf[..bs])?;
+        }
+
+        self.ext3_write_revoke_block()?;
 
         let mut commit = [0u8; 4096];
         commit[0..4].copy_from_slice(&JBD_MAGIC.to_be_bytes());
         commit[4..8].copy_from_slice(&JBD_COMMIT_BLOCK.to_be_bytes());
         commit[8..12].copy_from_slice(&self.journal_seq.to_be_bytes());
-
         let commit_disk_block = self.journal_block_to_disk(self.journal_pos)?;
         self.write_block_data(commit_disk_block, &commit[..bs])?;
-
         self.journal_pos = self.advance_journal_pos(self.journal_pos);
 
         self.mark_journal_dirty()?;
-
         self.journal_seq += 1;
         self.txn_active = false;
         self.txn_tag_count = 0;
-
-        crate::serial_println!("[ext3] txn committed: seq={} blocks={}", self.journal_seq - 1, tag_count);
-
+        self.txn_revoke_count = 0;
         Ok(())
     }
 
     pub fn ext3_abort_txn(&mut self) {
         self.txn_active = false;
         self.txn_tag_count = 0;
+        self.txn_revoke_count = 0;
     }
 
     fn mark_journal_dirty(&mut self) -> Result<(), FsError> {
@@ -349,14 +339,12 @@ impl MikuFS {
         if disk_blk == 0 {
             return Err(FsError::CorruptedFs);
         }
-
         let bs = self.block_size as usize;
         let mut buf = [0u8; 4096];
         self.read_block_into(disk_blk, &mut buf[..bs])?;
-
         buf[24..28].copy_from_slice(&self.journal_seq.to_be_bytes());
-        buf[28..32].copy_from_slice(&self.txn_desc_pos.to_be_bytes());
-
+        let first = self.journal_first;
+        buf[28..32].copy_from_slice(&first.to_be_bytes());
         self.write_block_data(disk_blk, &buf[..bs])?;
         Ok(())
     }
@@ -368,6 +356,18 @@ impl MikuFS {
             if blk != 0 {
                 self.ext3_journal_current_block(blk)?;
             }
+        }
+        let ind = inode.block(12);
+        if ind != 0 {
+            self.ext3_journal_current_block(ind)?;
+        }
+        let dind = inode.block(13);
+        if dind != 0 {
+            self.ext3_journal_current_block(dind)?;
+        }
+        let tind = inode.block(14);
+        if tind != 0 {
+            self.ext3_journal_current_block(tind)?;
         }
         Ok(())
     }
@@ -381,7 +381,6 @@ impl MikuFS {
         if group >= 32 {
             return Ok(());
         }
-
         let it_block = self.groups[group].inode_table();
         let inode_size = self.inode_size();
         let local_idx = idx % self.inodes_per_group;
@@ -389,7 +388,6 @@ impl MikuFS {
         let block_off = (byte_off / self.block_size as u64) as u32;
         self.ext3_journal_current_block(it_block + block_off)?;
         self.ext3_journal_current_block(self.groups[group].inode_bitmap())?;
-
         Ok(())
     }
 
@@ -398,6 +396,76 @@ impl MikuFS {
             return Ok(());
         }
         self.ext3_journal_current_block(self.groups[group].block_bitmap())?;
+        Ok(())
+    }
+
+    pub fn ext3_journal_revoke_block(&mut self, fs_block: u32) -> Result<(), FsError> {
+        if !self.journal_active || !self.txn_active {
+            return Ok(());
+        }
+        if self.txn_revoke_count >= 32 {
+            return Ok(());
+        }
+        for i in 0..self.txn_revoke_count as usize {
+            if self.txn_revokes[i] == fs_block {
+                return Ok(());
+            }
+        }
+        let idx = self.txn_revoke_count as usize;
+        self.txn_revokes[idx] = fs_block;
+        self.txn_revoke_count += 1;
+        Ok(())
+    }
+
+    pub fn ext3_journal_revoke_inode_blocks(
+        &mut self, inode_num: u32,
+    ) -> Result<(), FsError> {
+        if !self.journal_active || !self.txn_active {
+            return Ok(());
+        }
+        let inode = self.read_inode(inode_num)?;
+        for i in 0..12 {
+            let blk = inode.block(i);
+            if blk != 0 {
+                self.ext3_journal_revoke_block(blk)?;
+            }
+        }
+        let ind = inode.block(12);
+        if ind != 0 {
+            self.ext3_journal_revoke_block(ind)?;
+        }
+        let dind = inode.block(13);
+        if dind != 0 {
+            self.ext3_journal_revoke_block(dind)?;
+        }
+        let tind = inode.block(14);
+        if tind != 0 {
+            self.ext3_journal_revoke_block(tind)?;
+        }
+        Ok(())
+    }
+
+    pub fn ext3_write_revoke_block(&mut self) -> Result<(), FsError> {
+        if self.txn_revoke_count == 0 {
+            return Ok(());
+        }
+        let bs = self.block_size as usize;
+        let mut revoke_data = [0u8; 4096];
+        revoke_data[0..4].copy_from_slice(&JBD_MAGIC.to_be_bytes());
+        revoke_data[4..8].copy_from_slice(&JBD_REVOKE_BLOCK.to_be_bytes());
+        revoke_data[8..12].copy_from_slice(&self.journal_seq.to_be_bytes());
+        let count = self.txn_revoke_count as usize;
+        let record_size = 16 + count * 4;
+        revoke_data[12..16].copy_from_slice(&(record_size as u32).to_be_bytes());
+        for i in 0..count {
+            let offset = 16 + i * 4;
+            revoke_data[offset..offset+4]
+                .copy_from_slice(&self.txn_revokes[i].to_be_bytes());
+        }
+        let revoke_disk_block = self.journal_block_to_disk(self.journal_pos)?;
+        self.write_block_data(revoke_disk_block, &revoke_data[..bs])?;
+        self.journal_pos = self.advance_journal_pos(self.journal_pos);
+        self.txn_revoke_count = 0;
         Ok(())
     }
 }

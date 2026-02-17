@@ -1,6 +1,6 @@
 use crate::commands;
 use crate::{console, cprint, cprintln, print, println, serial_println};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
 use lazy_static::lazy_static;
 use pc_keyboard::DecodedKey;
 use spin::Mutex;
@@ -85,6 +85,7 @@ pub fn process_pending() {
     let cmd_len;
 
     unsafe {
+        compiler_fence(Ordering::Acquire);
         cmd_len = PENDING_LEN;
         cmd_buf[..cmd_len].copy_from_slice(&PENDING_BUF[..cmd_len]);
         PENDING_LEN = 0;
@@ -160,6 +161,7 @@ pub fn handle_keypress(key: DecodedKey) {
                     unsafe {
                         PENDING_BUF[..cl].copy_from_slice(&tmp[..cl]);
                         PENDING_LEN = cl;
+                        compiler_fence(Ordering::Release);
                     }
                 }
 
@@ -344,37 +346,59 @@ fn erase_cursor_inner(sh: &Shell) {
 }
 
 pub fn update_path(s: &mut Session, arg: &str) {
-    if arg == "/" {
-        s.path[0] = b'/';
-        s.plen = 1;
+    if arg.is_empty() {
         return;
     }
-    if arg == ".." {
-        if s.plen > 1 {
-            let mut nl = s.plen - 1;
-            while nl > 0 && s.path[nl] != b'/' {
-                nl -= 1;
+
+    if arg.starts_with('/') {
+        s.path[0] = b'/';
+        s.plen = 1;
+        for component in arg.split('/') {
+            if component.is_empty() || component == "." {
+                continue;
             }
-            if nl == 0 {
-                nl = 1;
+            if component == ".." {
+                if s.plen > 1 {
+                    let mut nl = s.plen - 1;
+                    while nl > 0 && s.path[nl] != b'/' {
+                        nl -= 1;
+                    }
+                    s.plen = if nl == 0 { 1 } else { nl };
+                }
+                continue;
             }
-            s.plen = nl;
+            append_component(s, component);
         }
         return;
     }
-    if arg == "." {
+
+    for component in arg.split('/') {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if component == ".." {
+            if s.plen > 1 {
+                let mut nl = s.plen - 1;
+                while nl > 0 && s.path[nl] != b'/' {
+                    nl -= 1;
+                }
+                s.plen = if nl == 0 { 1 } else { nl };
+            }
+            continue;
+        }
+        append_component(s, component);
+    }
+}
+
+fn append_component(s: &mut Session, name: &str) {
+    if s.plen == 0 {
         return;
     }
-    if arg.starts_with('/') {
-        s.plen = 0;
-    } else if s.plen > 1 && s.plen < MAX_PATH {
+    if s.plen > 1 && s.plen < MAX_PATH {
         s.path[s.plen] = b'/';
         s.plen += 1;
     }
-    for &b in arg.as_bytes() {
-        if b == b'/' {
-            continue;
-        }
+    for &b in name.as_bytes() {
         if s.plen < MAX_PATH {
             s.path[s.plen] = b;
             s.plen += 1;

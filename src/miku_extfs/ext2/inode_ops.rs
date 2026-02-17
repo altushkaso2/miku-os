@@ -68,11 +68,103 @@ impl MikuFS {
         Err(FsError::FileTooLarge)
     }
 
+    pub fn ensure_block(
+        &mut self,
+        inode: &mut Inode,
+        inode_num: u32,
+        logical_block: u32,
+    ) -> Result<u32, FsError> {
+        let group = ((inode_num - 1) / self.inodes_per_group) as usize;
+        let ptrs_per_block = self.block_size / 4;
+
+        if logical_block < 12 {
+            let existing = inode.block(logical_block as usize);
+            if existing != 0 {
+                return Ok(existing);
+            }
+            let new_block = self.alloc_block(group)?;
+            self.zero_block(new_block)?;
+            inode.set_block(logical_block as usize, new_block);
+            let blks = inode.blocks() + (self.block_size / 512);
+            inode.set_blocks(blks);
+            return Ok(new_block);
+        }
+
+        let adjusted = logical_block - 12;
+
+        if adjusted < ptrs_per_block {
+            let mut indirect_block = inode.block(12);
+            if indirect_block == 0 {
+                indirect_block = self.alloc_block(group)?;
+                self.zero_block(indirect_block)?;
+                inode.set_block(12, indirect_block);
+                let blks = inode.blocks() + (self.block_size / 512);
+                inode.set_blocks(blks);
+            }
+            return self.ensure_indirect_entry(indirect_block, adjusted, group, inode);
+        }
+
+        Err(FsError::FileTooLarge)
+    }
+
+    pub fn ensure_indirect_entry(
+        &mut self,
+        indirect_block: u32,
+        index: u32,
+        group: usize,
+        inode: &mut Inode,
+    ) -> Result<u32, FsError> {
+        let existing = self.read_indirect_entry(indirect_block, index)?;
+        if existing != 0 {
+            return Ok(existing);
+        }
+
+        let new_block = self.alloc_block(group)?;
+        self.zero_block(new_block)?;
+        self.write_indirect_entry(indirect_block, index, new_block)?;
+
+        let blks = inode.blocks() + (self.block_size / 512);
+        inode.set_blocks(blks);
+
+        Ok(new_block)
+    }
+
+    pub fn write_indirect_entry(
+        &mut self,
+        block_num: u32,
+        index: u32,
+        value: u32,
+    ) -> Result<(), FsError> {
+        let ptrs_per_block = self.block_size / 4;
+        if index >= ptrs_per_block {
+            return Err(FsError::InvalidBlock);
+        }
+
+        let byte_offset = index as usize * 4;
+        let sector_in_block = byte_offset / 512;
+        let offset_in_sector = byte_offset % 512;
+        let lba = self.block_to_lba(block_num) + sector_in_block as u32;
+
+        let mut sector = [0u8; 512];
+        self.reader.read_sector(lba, &mut sector)?;
+
+        sector[offset_in_sector..offset_in_sector + 4]
+            .copy_from_slice(&value.to_le_bytes());
+
+        self.reader.write_sector(lba, &sector)?;
+        Ok(())
+    }
+
     pub fn read_indirect_entry(
         &mut self,
         block_num: u32,
         index: u32,
     ) -> Result<u32, FsError> {
+        let ptrs_per_block = self.block_size / 4;
+        if index >= ptrs_per_block {
+            return Err(FsError::InvalidBlock);
+        }
+
         let byte_offset = index as usize * 4;
         let sector_in_block = byte_offset / 512;
         let offset_in_sector = byte_offset % 512;
