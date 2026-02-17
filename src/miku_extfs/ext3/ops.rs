@@ -1,222 +1,227 @@
-use crate::miku_extfs::{MikuFS, FsError};
-use crate::miku_extfs::structs::*;
 use super::journal::*;
+use crate::miku_extfs::structs::*;
+use crate::miku_extfs::{FsError, MikuFS};
 
 impl MikuFS {
     pub fn ext3_create_file(
-    &mut self, parent_ino: u32, name: &str, mode: u16,
-) -> Result<u32, FsError> {
-    let use_extents = self.superblock.has_extents();
+        &mut self,
+        parent_ino: u32,
+        name: &str,
+        mode: u16,
+    ) -> Result<u32, FsError> {
+        let use_extents = self.superblock.has_extents();
 
-    if !self.journal_active {
-        return if use_extents {
+        if !self.journal_active {
+            return if use_extents {
+                self.ext4_create_file(parent_ino, name, mode)
+            } else {
+                self.ext2_create_file(parent_ino, name, mode)
+            };
+        }
+
+        self.ext3_begin_txn()?;
+
+        let group = ((parent_ino - 1) / self.inodes_per_group) as usize;
+        self.journal_inode_blocks(parent_ino)?;
+        self.journal_inode_metadata(parent_ino)?;
+        self.journal_group_metadata(group)?;
+
+        let result = if use_extents {
             self.ext4_create_file(parent_ino, name, mode)
         } else {
             self.ext2_create_file(parent_ino, name, mode)
         };
-    }
 
-    self.ext3_begin_txn()?;
-
-    let group = ((parent_ino - 1) / self.inodes_per_group) as usize;
-    self.journal_inode_blocks(parent_ino)?;
-    self.journal_inode_metadata(parent_ino)?;
-    self.journal_group_metadata(group)?;
-
-    let result = if use_extents {
-        self.ext4_create_file(parent_ino, name, mode)
-    } else {
-        self.ext2_create_file(parent_ino, name, mode)
-    };
-
-    match result {
-        Ok(new_ino) => {
-            self.journal_inode_metadata(new_ino)?;
-            self.ext3_commit_txn()?;
-            Ok(new_ino)
-        }
-        Err(e) => {
-            self.ext3_abort_txn();
-            Err(e)
+        match result {
+            Ok(new_ino) => {
+                self.journal_inode_metadata(new_ino)?;
+                self.ext3_commit_txn()?;
+                Ok(new_ino)
+            }
+            Err(e) => {
+                self.ext3_abort_txn();
+                Err(e)
+            }
         }
     }
-}
 
     pub fn ext3_create_dir(
-    &mut self, parent_ino: u32, name: &str, mode: u16,
-) -> Result<u32, FsError> {
-    let use_extents = self.superblock.has_extents();
+        &mut self,
+        parent_ino: u32,
+        name: &str,
+        mode: u16,
+    ) -> Result<u32, FsError> {
+        let use_extents = self.superblock.has_extents();
 
-    if !self.journal_active {
-        return if use_extents {
+        if !self.journal_active {
+            return if use_extents {
+                self.ext4_create_dir(parent_ino, name, mode)
+            } else {
+                self.ext2_create_dir(parent_ino, name, mode)
+            };
+        }
+
+        self.ext3_begin_txn()?;
+
+        let group = ((parent_ino - 1) / self.inodes_per_group) as usize;
+        self.journal_inode_blocks(parent_ino)?;
+        self.journal_inode_metadata(parent_ino)?;
+        self.journal_group_metadata(group)?;
+
+        let result = if use_extents {
             self.ext4_create_dir(parent_ino, name, mode)
         } else {
             self.ext2_create_dir(parent_ino, name, mode)
         };
-    }
 
-    self.ext3_begin_txn()?;
-
-    let group = ((parent_ino - 1) / self.inodes_per_group) as usize;
-    self.journal_inode_blocks(parent_ino)?;
-    self.journal_inode_metadata(parent_ino)?;
-    self.journal_group_metadata(group)?;
-
-    let result = if use_extents {
-        self.ext4_create_dir(parent_ino, name, mode)
-    } else {
-        self.ext2_create_dir(parent_ino, name, mode)
-    };
-
-    match result {
-        Ok(new_ino) => {
-            self.journal_inode_blocks(new_ino)?;
-            self.journal_inode_metadata(new_ino)?;
-            self.ext3_commit_txn()?;
-            Ok(new_ino)
-        }
-        Err(e) => {
-            self.ext3_abort_txn();
-            Err(e)
+        match result {
+            Ok(new_ino) => {
+                self.journal_inode_blocks(new_ino)?;
+                self.journal_inode_metadata(new_ino)?;
+                self.ext3_commit_txn()?;
+                Ok(new_ino)
+            }
+            Err(e) => {
+                self.ext3_abort_txn();
+                Err(e)
+            }
         }
     }
-}
 
     pub fn ext3_write_file(
-    &mut self, inode_num: u32, data: &[u8], offset: u64,
-) -> Result<usize, FsError> {
-    let use_extents = {
-        let inode = self.read_inode(inode_num)?;
-        inode.uses_extents() || self.superblock.has_extents()
-    };
+        &mut self,
+        inode_num: u32,
+        data: &[u8],
+        offset: u64,
+    ) -> Result<usize, FsError> {
+        let use_extents = {
+            let inode = self.read_inode(inode_num)?;
+            inode.uses_extents() || self.superblock.has_extents()
+        };
 
-    if !self.journal_active {
-        return if use_extents {
+        if !self.journal_active {
+            return if use_extents {
+                self.ext4_write_file(inode_num, data, offset)
+            } else {
+                self.ext2_write_file(inode_num, data, offset)
+            };
+        }
+
+        self.ext3_begin_txn()?;
+
+        let group = ((inode_num - 1) / self.inodes_per_group) as usize;
+        self.journal_inode_metadata(inode_num)?;
+        self.journal_group_metadata(group)?;
+
+        let result = if use_extents {
             self.ext4_write_file(inode_num, data, offset)
         } else {
             self.ext2_write_file(inode_num, data, offset)
         };
-    }
 
-    self.ext3_begin_txn()?;
-
-    let group = ((inode_num - 1) / self.inodes_per_group) as usize;
-    self.journal_inode_metadata(inode_num)?;
-    self.journal_group_metadata(group)?;
-
-    let result = if use_extents {
-        self.ext4_write_file(inode_num, data, offset)
-    } else {
-        self.ext2_write_file(inode_num, data, offset)
-    };
-
-    match result {
-        Ok(n) => {
-            self.ext3_commit_txn()?;
-            Ok(n)
-        }
-        Err(e) => {
-            self.ext3_abort_txn();
-            Err(e)
+        match result {
+            Ok(n) => {
+                self.ext3_commit_txn()?;
+                Ok(n)
+            }
+            Err(e) => {
+                self.ext3_abort_txn();
+                Err(e)
+            }
         }
     }
-}
 
-pub fn ext3_delete_file(
-    &mut self, parent_ino: u32, name: &str,
-) -> Result<(), FsError> {
-    let target_ino = match self.ext2_lookup_in_dir(parent_ino, name)? {
-        Some(ino) => ino,
-        None => return Err(FsError::NotFound),
-    };
+    pub fn ext3_delete_file(&mut self, parent_ino: u32, name: &str) -> Result<(), FsError> {
+        let target_ino = match self.ext2_lookup_in_dir(parent_ino, name)? {
+            Some(ino) => ino,
+            None => return Err(FsError::NotFound),
+        };
 
-    let use_extents = {
-        let inode = self.read_inode(target_ino)?;
-        inode.uses_extents()
-    };
+        let use_extents = {
+            let inode = self.read_inode(target_ino)?;
+            inode.uses_extents()
+        };
 
-    if !self.journal_active {
-        return if use_extents {
+        if !self.journal_active {
+            return if use_extents {
+                self.ext4_delete_file(parent_ino, name)
+            } else {
+                self.ext2_delete_file(parent_ino, name)
+            };
+        }
+
+        self.ext3_begin_txn()?;
+
+        self.journal_inode_blocks(parent_ino)?;
+        self.journal_inode_metadata(target_ino)?;
+        self.journal_inode_metadata(parent_ino)?;
+        let group = ((target_ino - 1) / self.inodes_per_group) as usize;
+        self.journal_group_metadata(group)?;
+        self.ext3_journal_revoke_inode_blocks(target_ino)?;
+
+        let result = if use_extents {
             self.ext4_delete_file(parent_ino, name)
         } else {
             self.ext2_delete_file(parent_ino, name)
         };
-    }
 
-    self.ext3_begin_txn()?;
-
-    self.journal_inode_blocks(parent_ino)?;
-    self.journal_inode_metadata(target_ino)?;
-    self.journal_inode_metadata(parent_ino)?;
-    let group = ((target_ino - 1) / self.inodes_per_group) as usize;
-    self.journal_group_metadata(group)?;
-    self.ext3_journal_revoke_inode_blocks(target_ino)?;
-
-    let result = if use_extents {
-        self.ext4_delete_file(parent_ino, name)
-    } else {
-        self.ext2_delete_file(parent_ino, name)
-    };
-
-    match result {
-        Ok(()) => {
-            self.ext3_commit_txn()?;
-            Ok(())
-        }
-        Err(e) => {
-            self.ext3_abort_txn();
-            Err(e)
+        match result {
+            Ok(()) => {
+                self.ext3_commit_txn()?;
+                Ok(())
+            }
+            Err(e) => {
+                self.ext3_abort_txn();
+                Err(e)
+            }
         }
     }
-}
 
-pub fn ext3_delete_dir(
-    &mut self, parent_ino: u32, name: &str,
-) -> Result<(), FsError> {
-    let target_ino = match self.ext2_lookup_in_dir(parent_ino, name)? {
-        Some(ino) => ino,
-        None => return Err(FsError::NotFound),
-    };
+    pub fn ext3_delete_dir(&mut self, parent_ino: u32, name: &str) -> Result<(), FsError> {
+        let target_ino = match self.ext2_lookup_in_dir(parent_ino, name)? {
+            Some(ino) => ino,
+            None => return Err(FsError::NotFound),
+        };
 
-    let use_extents = {
-        let inode = self.read_inode(target_ino)?;
-        inode.uses_extents()
-    };
+        let use_extents = {
+            let inode = self.read_inode(target_ino)?;
+            inode.uses_extents()
+        };
 
-    if !self.journal_active {
-        return if use_extents {
+        if !self.journal_active {
+            return if use_extents {
+                self.ext4_delete_dir(parent_ino, name)
+            } else {
+                self.ext2_delete_dir(parent_ino, name)
+            };
+        }
+
+        self.ext3_begin_txn()?;
+
+        self.journal_inode_blocks(parent_ino)?;
+        self.journal_inode_metadata(target_ino)?;
+        self.journal_inode_metadata(parent_ino)?;
+        let group = ((target_ino - 1) / self.inodes_per_group) as usize;
+        self.journal_group_metadata(group)?;
+        self.ext3_journal_revoke_inode_blocks(target_ino)?;
+
+        let result = if use_extents {
             self.ext4_delete_dir(parent_ino, name)
         } else {
             self.ext2_delete_dir(parent_ino, name)
         };
-    }
 
-    self.ext3_begin_txn()?;
-
-    self.journal_inode_blocks(parent_ino)?;
-    self.journal_inode_metadata(target_ino)?;
-    self.journal_inode_metadata(parent_ino)?;
-    let group = ((target_ino - 1) / self.inodes_per_group) as usize;
-    self.journal_group_metadata(group)?;
-    self.ext3_journal_revoke_inode_blocks(target_ino)?;
-
-    let result = if use_extents {
-        self.ext4_delete_dir(parent_ino, name)
-    } else {
-        self.ext2_delete_dir(parent_ino, name)
-    };
-
-    match result {
-        Ok(()) => {
-            self.ext3_commit_txn()?;
-            Ok(())
-        }
-        Err(e) => {
-            self.ext3_abort_txn();
-            Err(e)
+        match result {
+            Ok(()) => {
+                self.ext3_commit_txn()?;
+                Ok(())
+            }
+            Err(e) => {
+                self.ext3_abort_txn();
+                Err(e)
+            }
         }
     }
-}
 
     pub fn ext3_create_journal(&mut self, num_blocks: u32) -> Result<(), FsError> {
         if self.has_journal() {
@@ -269,7 +274,8 @@ pub fn ext3_delete_dir(
         self.write_inode(EXT2_JOURNAL_INO, &j_inode)?;
         self.write_journal_superblock(num_blocks)?;
         let compat = self.superblock.feature_compat();
-        self.superblock.write_u32(92, compat | FEATURE_COMPAT_HAS_JOURNAL);
+        self.superblock
+            .write_u32(92, compat | FEATURE_COMPAT_HAS_JOURNAL);
         self.superblock.write_u32(224, EXT2_JOURNAL_INO);
         let fs_uuid = self.superblock.uuid();
         let mut uuid_copy = [0u8; 16];

@@ -1,6 +1,6 @@
-use crate::miku_extfs::{MikuFS, FsError};
-use crate::miku_extfs::structs::*;
 use super::crc32c;
+use crate::miku_extfs::structs::*;
+use crate::miku_extfs::{FsError, MikuFS};
 
 impl MikuFS {
     pub fn verify_superblock_csum(&self) -> bool {

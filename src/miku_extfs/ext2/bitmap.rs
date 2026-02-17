@@ -1,4 +1,4 @@
-use crate::miku_extfs::{MikuFS, FsError};
+use crate::miku_extfs::{FsError, MikuFS};
 
 impl MikuFS {
     pub fn alloc_block(&mut self, preferred_group: usize) -> Result<u32, FsError> {
@@ -24,12 +24,16 @@ impl MikuFS {
 
                 for byte_idx in 0..512usize {
                     let b = sector[byte_idx];
-                    if b == 0xFF { continue; }
+                    if b == 0xFF {
+                        continue;
+                    }
 
                     for bit in 0..8u32 {
                         if b & (1 << bit) == 0 {
                             let bit_index = sector_base_bit + byte_idx as u32 * 8 + bit;
-                            if bit_index >= blocks_in_group { break; }
+                            if bit_index >= blocks_in_group {
+                                break;
+                            }
 
                             sector[byte_idx] |= 1 << bit;
                             self.reader.write_sector(base_lba + s, &sector)?;
@@ -37,7 +41,8 @@ impl MikuFS {
                             self.update_superblock_free_blocks(-1)?;
 
                             let absolute_block = group as u32 * self.blocks_per_group
-                                + bit_index + self.superblock.first_data_block();
+                                + bit_index
+                                + self.superblock.first_data_block();
                             return Ok(absolute_block);
                         }
                     }
@@ -93,12 +98,16 @@ impl MikuFS {
 
                 for byte_idx in 0..512usize {
                     let b = sector[byte_idx];
-                    if b == 0xFF { continue; }
+                    if b == 0xFF {
+                        continue;
+                    }
 
                     for bit in 0..8u32 {
                         if b & (1 << bit) == 0 {
                             let bit_index = sector_base_bit + byte_idx as u32 * 8 + bit;
-                            if bit_index >= inodes_in_group { break; }
+                            if bit_index >= inodes_in_group {
+                                break;
+                            }
 
                             sector[byte_idx] |= 1 << bit;
                             self.reader.write_sector(base_lba + s, &sector)?;
@@ -138,7 +147,10 @@ impl MikuFS {
     }
 
     pub fn set_bitmap_bit(
-        &mut self, bitmap_block: u32, bit_index: u32, value: bool,
+        &mut self,
+        bitmap_block: u32,
+        bit_index: u32,
+        value: bool,
     ) -> Result<(), FsError> {
         let byte_index = bit_index / 8;
         let bit_offset = bit_index % 8;
@@ -160,7 +172,9 @@ impl MikuFS {
     }
 
     pub fn update_group_free_blocks(&mut self, group: usize, delta: i16) -> Result<(), FsError> {
-        if group >= 32 { return Err(FsError::InvalidBlock); }
+        if group >= 32 {
+            return Err(FsError::InvalidBlock);
+        }
         let current = self.groups[group].free_blocks();
         let new_val = (current as i32 + delta as i32).max(0) as u16;
         self.groups[group].write_u16(12, new_val);
@@ -168,7 +182,9 @@ impl MikuFS {
     }
 
     pub fn update_group_free_inodes(&mut self, group: usize, delta: i16) -> Result<(), FsError> {
-        if group >= 32 { return Err(FsError::InvalidInode); }
+        if group >= 32 {
+            return Err(FsError::InvalidInode);
+        }
         let current = self.groups[group].free_inodes();
         let new_val = (current as i32 + delta as i32).max(0) as u16;
         self.groups[group].write_u16(14, new_val);

@@ -23,17 +23,16 @@ pub fn cmd_info() {
     cprintln!(57, 197, 187, "  MikuOS v0.0.1");
     cprintln!(230, 240, 240, "  VNodes: {}/{}", vn, crate::vfs::MAX_VNODES);
     cprintln!(230, 240, 240, "  Mounts: {}", mn);
-    cprintln!(230, 240, 240, "  Heap:   {} / {} KB used", heap_used / 1024, heap_total / 1024);
-    cprintln!(230, 240, 240, "  Free:   {} KB", heap_free / 1024);
     cprintln!(
-        120,
-        140,
-        140,
-        "  Uptime: {}h {}m {}s",
-        hours,
-        mins,
-        secs
+        230,
+        240,
+        240,
+        "  Heap:   {} / {} KB used",
+        heap_used / 1024,
+        heap_total / 1024
     );
+    cprintln!(230, 240, 240, "  Free:   {} KB", heap_free / 1024);
+    cprintln!(120, 140, 140, "  Uptime: {}h {}m {}s", hours, mins, secs);
 }
 
 pub fn cmd_heap() {
@@ -46,11 +45,7 @@ pub fn cmd_heap() {
     println!("  Used:   {} bytes ({} KB)", used, used / 1024);
     println!("  Free:   {} bytes ({} KB)", free, free / 1024);
 
-    let pct = if total > 0 {
-        (used * 100) / total
-    } else {
-        0
-    };
+    let pct = if total > 0 { (used * 100) / total } else { 0 };
     println!("  Usage:  {}%", pct);
 
     if pct > 80 {
@@ -112,7 +107,12 @@ pub fn cmd_help() {
     cprintln!(128, 222, 217, "  ext2tree [path]          directory tree");
     cprintln!(128, 222, 217, "  ext2fsck                 check filesystem");
     cprintln!(128, 222, 217, "  ext2cache                cache statistics");
-    cprintln!(128, 222, 217, "  ext2cacheflush           flush block cache");
+    cprintln!(
+        128,
+        222,
+        217,
+        "  ext2cacheflush           flush block cache"
+    );
     cprintln!(57, 197, 187, "  Mount:");
     cprintln!(
         128,
@@ -143,7 +143,12 @@ pub fn cmd_help() {
         "  ext3clean                mark journal clean"
     );
     cprintln!(57, 197, 187, "  System:");
-    cprintln!(128, 222, 217, "  heap                     heap allocator info");
+    cprintln!(
+        128,
+        222,
+        217,
+        "  heap                     heap allocator info"
+    );
     cprintln!(128, 222, 217, "  reboot                   restart system");
     cprintln!(128, 222, 217, "  poweroff                 shutdown system");
 }

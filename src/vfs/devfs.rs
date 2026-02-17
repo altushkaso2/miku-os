@@ -69,9 +69,7 @@ fn next_random() -> u8 {
 
 pub fn dev_read(dev_type: DevType, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
     match dev_type {
-        DevType::Null => {
-            Ok(0)
-        }
+        DevType::Null => Ok(0),
         DevType::Zero => {
             let len = buf.len();
             for b in buf.iter_mut() {
@@ -86,17 +84,13 @@ pub fn dev_read(dev_type: DevType, buf: &mut [u8], _offset: u64) -> VfsResult<us
             }
             Ok(len)
         }
-        DevType::Console => {
-            Ok(0)
-        }
+        DevType::Console => Ok(0),
     }
 }
 
 pub fn dev_write(dev_type: DevType, buf: &[u8], _offset: u64) -> VfsResult<usize> {
     match dev_type {
-        DevType::Null | DevType::Zero | DevType::Random => {
-            Ok(buf.len())
-        }
+        DevType::Null | DevType::Zero | DevType::Random => Ok(buf.len()),
         DevType::Console => {
             for &b in buf {
                 if b >= 0x20 && b <= 0x7E {
@@ -124,9 +118,9 @@ pub fn dev_type_from_node(major: u8, minor: u8) -> Option<DevType> {
 }
 
 pub const DEV_ENTRIES: &[(&str, DevType)] = &[
-    ("null",    DevType::Null),
-    ("zero",    DevType::Zero),
-    ("random",  DevType::Random),
+    ("null", DevType::Null),
+    ("zero", DevType::Zero),
+    ("random", DevType::Random),
     ("urandom", DevType::Random),
     ("console", DevType::Console),
 ];

@@ -1,15 +1,15 @@
-pub mod structs;
+pub mod cache;
 pub mod error;
-pub mod reader;
 pub mod ext2;
 pub mod ext3;
 pub mod ext4;
-pub mod cache;
+pub mod reader;
+pub mod structs;
 
 use crate::ata::AtaDrive;
-use structs::*;
-use reader::DiskReader;
 use ext3::journal::TxnTag;
+use reader::DiskReader;
+use structs::*;
 
 pub use error::FsError;
 
@@ -65,7 +65,7 @@ impl MikuFS {
         self.reader.write_sector(3, &s1)?;
         Ok(())
     }
-    
+
     pub fn flush_group_desc(&mut self, group: usize) -> Result<(), FsError> {
         if self.superblock.has_metadata_csum() || self.superblock.has_gdt_csum() {
             self.update_group_desc_csum(group);
@@ -130,9 +130,7 @@ impl MikuFS {
         Ok(())
     }
 
-    pub fn read_block_into(
-        &mut self, block_num: u32, buf: &mut [u8],
-    ) -> Result<(), FsError> {
+    pub fn read_block_into(&mut self, block_num: u32, buf: &mut [u8]) -> Result<(), FsError> {
         if let Some(ref mut c) = self.block_cache {
             if c.get(block_num, buf) {
                 return Ok(());
@@ -158,9 +156,7 @@ impl MikuFS {
         Ok(())
     }
 
-    pub fn write_block_data(
-        &mut self, block_num: u32, data: &[u8],
-    ) -> Result<(), FsError> {
+    pub fn write_block_data(&mut self, block_num: u32, data: &[u8]) -> Result<(), FsError> {
         let spb = self.sectors_per_block();
         let base_lba = self.block_to_lba(block_num);
         let bs = self.block_size as usize;
@@ -237,7 +233,8 @@ impl MikuFS {
             return Ok(());
         }
         let incompat = self.superblock.feature_incompat();
-        self.superblock.write_u32(96, incompat | FEATURE_INCOMPAT_EXTENTS);
+        self.superblock
+            .write_u32(96, incompat | FEATURE_INCOMPAT_EXTENTS);
         self.flush_superblock()
     }
 }

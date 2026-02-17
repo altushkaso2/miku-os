@@ -1,5 +1,5 @@
-use crate::miku_extfs::{MikuFS, FsError};
 use crate::miku_extfs::structs::*;
+use crate::miku_extfs::{FsError, MikuFS};
 
 pub const JBD_MAGIC: u32 = 0xC03B3998;
 
@@ -24,7 +24,10 @@ pub struct TxnTag {
 
 impl TxnTag {
     pub const fn empty() -> Self {
-        Self { fs_block: 0, journal_pos: 0 }
+        Self {
+            fs_block: 0,
+            journal_pos: 0,
+        }
     }
 }
 
@@ -40,8 +43,10 @@ impl JournalSuperblock {
 
     fn read_be32(&self, offset: usize) -> u32 {
         u32::from_be_bytes([
-            self.data[offset], self.data[offset + 1],
-            self.data[offset + 2], self.data[offset + 3],
+            self.data[offset],
+            self.data[offset + 1],
+            self.data[offset + 2],
+            self.data[offset + 3],
         ])
     }
 
@@ -50,18 +55,42 @@ impl JournalSuperblock {
         self.data[offset..offset + 4].copy_from_slice(&bytes);
     }
 
-    pub fn magic(&self) -> u32 { self.read_be32(0) }
-    pub fn blocktype(&self) -> u32 { self.read_be32(4) }
-    pub fn blocksize(&self) -> u32 { self.read_be32(12) }
-    pub fn maxlen(&self) -> u32 { self.read_be32(16) }
-    pub fn first(&self) -> u32 { self.read_be32(20) }
-    pub fn start_sequence(&self) -> u32 { self.read_be32(24) }
-    pub fn start(&self) -> u32 { self.read_be32(28) }
-    pub fn errno_val(&self) -> i32 { self.read_be32(32) as i32 }
-    pub fn uuid(&self) -> &[u8] { &self.data[48..64] }
-    pub fn is_valid(&self) -> bool { self.magic() == JBD_MAGIC }
-    pub fn is_clean(&self) -> bool { self.start() == 0 }
-    pub fn is_v2(&self) -> bool { self.blocktype() == JBD_SUPERBLOCK_V2 }
+    pub fn magic(&self) -> u32 {
+        self.read_be32(0)
+    }
+    pub fn blocktype(&self) -> u32 {
+        self.read_be32(4)
+    }
+    pub fn blocksize(&self) -> u32 {
+        self.read_be32(12)
+    }
+    pub fn maxlen(&self) -> u32 {
+        self.read_be32(16)
+    }
+    pub fn first(&self) -> u32 {
+        self.read_be32(20)
+    }
+    pub fn start_sequence(&self) -> u32 {
+        self.read_be32(24)
+    }
+    pub fn start(&self) -> u32 {
+        self.read_be32(28)
+    }
+    pub fn errno_val(&self) -> i32 {
+        self.read_be32(32) as i32
+    }
+    pub fn uuid(&self) -> &[u8] {
+        &self.data[48..64]
+    }
+    pub fn is_valid(&self) -> bool {
+        self.magic() == JBD_MAGIC
+    }
+    pub fn is_clean(&self) -> bool {
+        self.start() == 0
+    }
+    pub fn is_v2(&self) -> bool {
+        self.blocktype() == JBD_SUPERBLOCK_V2
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -80,9 +109,15 @@ impl JournalHeader {
         }
     }
 
-    pub fn is_valid(&self) -> bool { self.magic == JBD_MAGIC }
-    pub fn is_descriptor(&self) -> bool { self.blocktype == JBD_DESCRIPTOR_BLOCK }
-    pub fn is_commit(&self) -> bool { self.blocktype == JBD_COMMIT_BLOCK }
+    pub fn is_valid(&self) -> bool {
+        self.magic == JBD_MAGIC
+    }
+    pub fn is_descriptor(&self) -> bool {
+        self.blocktype == JBD_DESCRIPTOR_BLOCK
+    }
+    pub fn is_commit(&self) -> bool {
+        self.blocktype == JBD_COMMIT_BLOCK
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -95,16 +130,26 @@ impl JournalBlockTag {
     pub fn from_buf(buf: &[u8], offset: usize) -> Self {
         Self {
             blocknr: u32::from_be_bytes([
-                buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3],
+                buf[offset],
+                buf[offset + 1],
+                buf[offset + 2],
+                buf[offset + 3],
             ]),
             flags: u32::from_be_bytes([
-                buf[offset + 4], buf[offset + 5], buf[offset + 6], buf[offset + 7],
+                buf[offset + 4],
+                buf[offset + 5],
+                buf[offset + 6],
+                buf[offset + 7],
             ]),
         }
     }
 
-    pub fn is_last(&self) -> bool { self.flags & JBD_FLAG_LAST_TAG != 0 }
-    pub fn same_uuid(&self) -> bool { self.flags & JBD_FLAG_SAME_UUID != 0 }
+    pub fn is_last(&self) -> bool {
+        self.flags & JBD_FLAG_LAST_TAG != 0
+    }
+    pub fn same_uuid(&self) -> bool {
+        self.flags & JBD_FLAG_SAME_UUID != 0
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -118,7 +163,13 @@ pub struct JournalTransaction {
 
 impl JournalTransaction {
     pub const fn empty() -> Self {
-        Self { sequence: 0, start_block: 0, data_blocks: 0, committed: false, active: false }
+        Self {
+            sequence: 0,
+            start_block: 0,
+            data_blocks: 0,
+            committed: false,
+            active: false,
+        }
     }
 }
 
@@ -141,10 +192,19 @@ pub struct JournalInfo {
 impl JournalInfo {
     pub const fn empty() -> Self {
         Self {
-            valid: false, version: 0, block_size: 0, total_blocks: 0,
-            first_block: 0, start: 0, sequence: 0, clean: false, errno: 0,
+            valid: false,
+            version: 0,
+            block_size: 0,
+            total_blocks: 0,
+            first_block: 0,
+            start: 0,
+            sequence: 0,
+            clean: false,
+            errno: 0,
             transactions: [JournalTransaction::empty(); 32],
-            transaction_count: 0, journal_inode: 0, journal_size: 0,
+            transaction_count: 0,
+            journal_inode: 0,
+            journal_size: 0,
         }
     }
 }
@@ -180,7 +240,9 @@ impl MikuFS {
     }
 
     pub fn read_journal_block_data(
-        &mut self, journal_block: u32, buf: &mut [u8],
+        &mut self,
+        journal_block: u32,
+        buf: &mut [u8],
     ) -> Result<(), FsError> {
         let disk_block = self.journal_block_to_disk(journal_block)?;
         if disk_block == 0 {
@@ -207,8 +269,12 @@ impl MikuFS {
         } else {
             self.journal_pos = jsb.start();
         }
-        crate::serial_println!("[ext3] journal init: seq={} pos={} max={} active=true",
-            self.journal_seq, self.journal_pos, self.journal_maxlen);
+        crate::serial_println!(
+            "[ext3] journal init: seq={} pos={} max={} active=true",
+            self.journal_seq,
+            self.journal_pos,
+            self.journal_maxlen
+        );
         Ok(())
     }
 
@@ -301,10 +367,10 @@ impl MikuFS {
                 let tag = &self.txn_tags[i];
                 (tag.fs_block, tag.journal_pos)
             };
-            
+
             let mut buf = [0u8; 4096];
             self.read_block_into(fs_block, &mut buf[..bs])?;
-            
+
             let journal_disk_block = self.journal_block_to_disk(journal_pos)?;
             self.write_block_data(journal_disk_block, &buf[..bs])?;
         }
@@ -417,9 +483,7 @@ impl MikuFS {
         Ok(())
     }
 
-    pub fn ext3_journal_revoke_inode_blocks(
-        &mut self, inode_num: u32,
-    ) -> Result<(), FsError> {
+    pub fn ext3_journal_revoke_inode_blocks(&mut self, inode_num: u32) -> Result<(), FsError> {
         if !self.journal_active || !self.txn_active {
             return Ok(());
         }
@@ -459,8 +523,7 @@ impl MikuFS {
         revoke_data[12..16].copy_from_slice(&(record_size as u32).to_be_bytes());
         for i in 0..count {
             let offset = 16 + i * 4;
-            revoke_data[offset..offset+4]
-                .copy_from_slice(&self.txn_revokes[i].to_be_bytes());
+            revoke_data[offset..offset + 4].copy_from_slice(&self.txn_revokes[i].to_be_bytes());
         }
         let revoke_disk_block = self.journal_block_to_disk(self.journal_pos)?;
         self.write_block_data(revoke_disk_block, &revoke_data[..bs])?;

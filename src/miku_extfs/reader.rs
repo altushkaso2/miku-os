@@ -1,6 +1,6 @@
-use crate::ata::AtaDrive;
 use super::structs::*;
 use super::FsError;
+use crate::ata::AtaDrive;
 
 pub struct DiskReader {
     pub drive: AtaDrive,
@@ -12,11 +12,15 @@ impl DiskReader {
     }
 
     pub fn read_sector(&mut self, lba: u32, buf: &mut [u8; 512]) -> Result<(), FsError> {
-        self.drive.read_sector(lba, buf).map_err(|_| FsError::IoError)
+        self.drive
+            .read_sector(lba, buf)
+            .map_err(|_| FsError::IoError)
     }
 
     pub fn write_sector(&mut self, lba: u32, buf: &[u8; 512]) -> Result<(), FsError> {
-        self.drive.write_sector(lba, buf).map_err(|_| FsError::IoError)
+        self.drive
+            .write_sector(lba, buf)
+            .map_err(|_| FsError::IoError)
     }
 
     pub fn read_superblock(&mut self) -> Result<Superblock, FsError> {
@@ -115,9 +119,8 @@ impl DiskReader {
         self.read_sector(sector, &mut buf)?;
 
         if offset_in_sector + read_size <= 512 {
-            inode.data[..read_size].copy_from_slice(
-                &buf[offset_in_sector..offset_in_sector + read_size]
-            );
+            inode.data[..read_size]
+                .copy_from_slice(&buf[offset_in_sector..offset_in_sector + read_size]);
         } else {
             let first_part = 512 - offset_in_sector;
             inode.data[..first_part].copy_from_slice(&buf[offset_in_sector..512]);

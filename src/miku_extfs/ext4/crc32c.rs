@@ -46,9 +46,7 @@ pub fn ext4_group_desc_csum(uuid: &[u8], group: u32, gd_data: &[u8]) -> u16 {
     (result & 0xFFFF) as u16
 }
 
-pub fn ext4_inode_csum(
-    uuid: &[u8], inode_num: u32, gen: u32, inode_data: &[u8],
-) -> u32 {
+pub fn ext4_inode_csum(uuid: &[u8], inode_num: u32, gen: u32, inode_data: &[u8]) -> u32 {
     let crc = crc32c(0xFFFFFFFF, uuid);
     let ino_bytes = inode_num.to_le_bytes();
     let crc = crc32c(crc ^ 0xFFFFFFFF, &ino_bytes);

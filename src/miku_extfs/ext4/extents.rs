@@ -1,9 +1,11 @@
-use crate::miku_extfs::{MikuFS, FsError};
 use crate::miku_extfs::structs::*;
+use crate::miku_extfs::{FsError, MikuFS};
 
 impl MikuFS {
     pub fn get_file_block_extent(
-        &mut self, inode: &Inode, logical_block: u32,
+        &mut self,
+        inode: &Inode,
+        logical_block: u32,
     ) -> Result<u32, FsError> {
         let header = inode.extent_header();
         if !header.valid() {
@@ -12,9 +14,7 @@ impl MikuFS {
         if header.depth == 0 {
             for i in 0..header.entries as usize {
                 let ext = inode.extent_at(i);
-                if logical_block >= ext.block
-                    && logical_block < ext.block + ext.actual_len()
-                {
+                if logical_block >= ext.block && logical_block < ext.block + ext.actual_len() {
                     let offset = logical_block - ext.block;
                     return Ok((ext.start() + offset as u64) as u32);
                 }
@@ -35,7 +35,10 @@ impl MikuFS {
     }
 
     fn search_extent_tree(
-        &mut self, block_num: u32, logical_block: u32, depth: u16,
+        &mut self,
+        block_num: u32,
+        logical_block: u32,
+        depth: u16,
     ) -> Result<u32, FsError> {
         let mut buf = [0u8; 4096];
         let bs = self.block_size as usize;
@@ -48,11 +51,21 @@ impl MikuFS {
         if depth == 0 {
             for i in 0..entries as usize {
                 let base = 12 + i * 12;
-                let ee_block = u32::from_le_bytes([buf[base], buf[base+1], buf[base+2], buf[base+3]]);
-                let ee_len = u16::from_le_bytes([buf[base+4], buf[base+5]]);
-                let ee_start_hi = u16::from_le_bytes([buf[base+6], buf[base+7]]);
-                let ee_start_lo = u32::from_le_bytes([buf[base+8], buf[base+9], buf[base+10], buf[base+11]]);
-                let actual_len = if ee_len > 32768 { ee_len - 32768 } else { ee_len } as u32;
+                let ee_block =
+                    u32::from_le_bytes([buf[base], buf[base + 1], buf[base + 2], buf[base + 3]]);
+                let ee_len = u16::from_le_bytes([buf[base + 4], buf[base + 5]]);
+                let ee_start_hi = u16::from_le_bytes([buf[base + 6], buf[base + 7]]);
+                let ee_start_lo = u32::from_le_bytes([
+                    buf[base + 8],
+                    buf[base + 9],
+                    buf[base + 10],
+                    buf[base + 11],
+                ]);
+                let actual_len = if ee_len > 32768 {
+                    ee_len - 32768
+                } else {
+                    ee_len
+                } as u32;
                 if logical_block >= ee_block && logical_block < ee_block + actual_len {
                     let offset = logical_block - ee_block;
                     let start = (ee_start_lo as u64) | ((ee_start_hi as u64) << 32);
@@ -64,9 +77,11 @@ impl MikuFS {
         let mut target_block = 0u64;
         for i in 0..entries as usize {
             let base = 12 + i * 12;
-            let ei_block = u32::from_le_bytes([buf[base], buf[base+1], buf[base+2], buf[base+3]]);
-            let ei_leaf_lo = u32::from_le_bytes([buf[base+4], buf[base+5], buf[base+6], buf[base+7]]);
-            let ei_leaf_hi = u16::from_le_bytes([buf[base+8], buf[base+9]]);
+            let ei_block =
+                u32::from_le_bytes([buf[base], buf[base + 1], buf[base + 2], buf[base + 3]]);
+            let ei_leaf_lo =
+                u32::from_le_bytes([buf[base + 4], buf[base + 5], buf[base + 6], buf[base + 7]]);
+            let ei_leaf_hi = u16::from_le_bytes([buf[base + 8], buf[base + 9]]);
             if logical_block >= ei_block {
                 target_block = (ei_leaf_lo as u64) | ((ei_leaf_hi as u64) << 32);
             }
@@ -78,8 +93,11 @@ impl MikuFS {
     }
 
     pub fn ext4_insert_extent(
-        &mut self, inode: &mut Inode, inode_num: u32,
-        logical_block: u32, phys_block: u32,
+        &mut self,
+        inode: &mut Inode,
+        inode_num: u32,
+        logical_block: u32,
+        phys_block: u32,
     ) -> Result<(), FsError> {
         let header = inode.extent_header();
         if !header.valid() {
@@ -92,8 +110,11 @@ impl MikuFS {
     }
 
     fn ext4_insert_extent_leaf(
-        &mut self, inode: &mut Inode, inode_num: u32,
-        logical_block: u32, phys_block: u32,
+        &mut self,
+        inode: &mut Inode,
+        inode_num: u32,
+        logical_block: u32,
+        phys_block: u32,
     ) -> Result<(), FsError> {
         let header = inode.extent_header();
         let entries = header.entries;
@@ -137,7 +158,9 @@ impl MikuFS {
     }
 
     pub fn ext4_grow_extent_tree(
-        &mut self, inode: &mut Inode, inode_num: u32,
+        &mut self,
+        inode: &mut Inode,
+        inode_num: u32,
     ) -> Result<(), FsError> {
         let group = ((inode_num - 1) / self.inodes_per_group) as usize;
         let new_block = self.alloc_block(group)?;
@@ -186,8 +209,12 @@ impl MikuFS {
     }
 
     fn ext4_insert_extent_deep(
-        &mut self, inode: &mut Inode, inode_num: u32,
-        logical_block: u32, phys_block: u32, depth: u16,
+        &mut self,
+        inode: &mut Inode,
+        inode_num: u32,
+        logical_block: u32,
+        phys_block: u32,
+        depth: u16,
     ) -> Result<(), FsError> {
         let header = inode.extent_header();
         let mut target_idx = 0usize;
@@ -216,21 +243,29 @@ impl MikuFS {
             if child_entries > 0 {
                 let last_base = 12 + (child_entries as usize - 1) * 12;
                 let ext_block = u32::from_le_bytes([
-                    buf[last_base], buf[last_base+1], buf[last_base+2], buf[last_base+3],
+                    buf[last_base],
+                    buf[last_base + 1],
+                    buf[last_base + 2],
+                    buf[last_base + 3],
                 ]);
-                let ext_len = u16::from_le_bytes([buf[last_base+4], buf[last_base+5]]);
+                let ext_len = u16::from_le_bytes([buf[last_base + 4], buf[last_base + 5]]);
                 let ext_start_lo = u32::from_le_bytes([
-                    buf[last_base+8], buf[last_base+9], buf[last_base+10], buf[last_base+11],
+                    buf[last_base + 8],
+                    buf[last_base + 9],
+                    buf[last_base + 10],
+                    buf[last_base + 11],
                 ]);
-                let actual_len = if ext_len > 32768 { ext_len - 32768 } else { ext_len } as u32;
+                let actual_len = if ext_len > 32768 {
+                    ext_len - 32768
+                } else {
+                    ext_len
+                } as u32;
                 let end_logical = ext_block + actual_len;
                 let end_physical = ext_start_lo + actual_len;
-                if logical_block == end_logical
-                    && phys_block == end_physical
-                    && actual_len < 32767
+                if logical_block == end_logical && phys_block == end_physical && actual_len < 32767
                 {
                     let new_len = (actual_len + 1) as u16;
-                    buf[last_base+4..last_base+6].copy_from_slice(&new_len.to_le_bytes());
+                    buf[last_base + 4..last_base + 6].copy_from_slice(&new_len.to_le_bytes());
                     self.write_block_data(child_block, &buf[..bs])?;
                     return Ok(());
                 }
@@ -238,10 +273,10 @@ impl MikuFS {
 
             if child_entries < child_max {
                 let new_base = 12 + child_entries as usize * 12;
-                buf[new_base..new_base+4].copy_from_slice(&logical_block.to_le_bytes());
-                buf[new_base+4..new_base+6].copy_from_slice(&1u16.to_le_bytes());
-                buf[new_base+6..new_base+8].copy_from_slice(&0u16.to_le_bytes());
-                buf[new_base+8..new_base+12].copy_from_slice(&phys_block.to_le_bytes());
+                buf[new_base..new_base + 4].copy_from_slice(&logical_block.to_le_bytes());
+                buf[new_base + 4..new_base + 6].copy_from_slice(&1u16.to_le_bytes());
+                buf[new_base + 6..new_base + 8].copy_from_slice(&0u16.to_le_bytes());
+                buf[new_base + 8..new_base + 12].copy_from_slice(&phys_block.to_le_bytes());
                 let new_entries = child_entries + 1;
                 buf[2..4].copy_from_slice(&new_entries.to_le_bytes());
                 self.write_block_data(child_block, &buf[..bs])?;
@@ -249,26 +284,33 @@ impl MikuFS {
             }
 
             return self.ext4_split_leaf(
-                inode, inode_num, child_block, &buf[..bs],
-                logical_block, phys_block, target_idx,
+                inode,
+                inode_num,
+                child_block,
+                &buf[..bs],
+                logical_block,
+                phys_block,
+                target_idx,
             );
         }
 
         let mut sub_target = 0usize;
         for i in 0..child_entries as usize {
             let base = 12 + i * 12;
-            let ei_block = u32::from_le_bytes([
-                buf[base], buf[base+1], buf[base+2], buf[base+3],
-            ]);
+            let ei_block =
+                u32::from_le_bytes([buf[base], buf[base + 1], buf[base + 2], buf[base + 3]]);
             if logical_block >= ei_block {
                 sub_target = i;
             }
         }
         let sub_base = 12 + sub_target * 12;
         let sub_leaf_lo = u32::from_le_bytes([
-            buf[sub_base+4], buf[sub_base+5], buf[sub_base+6], buf[sub_base+7],
+            buf[sub_base + 4],
+            buf[sub_base + 5],
+            buf[sub_base + 6],
+            buf[sub_base + 7],
         ]);
-        let sub_leaf_hi = u16::from_le_bytes([buf[sub_base+8], buf[sub_base+9]]);
+        let sub_leaf_hi = u16::from_le_bytes([buf[sub_base + 8], buf[sub_base + 9]]);
         let sub_child = (sub_leaf_lo as u64) | ((sub_leaf_hi as u64) << 32);
 
         let mut sub_buf = [0u8; 4096];
@@ -278,10 +320,10 @@ impl MikuFS {
 
         if sub_entries < sub_max {
             let new_base = 12 + sub_entries as usize * 12;
-            sub_buf[new_base..new_base+4].copy_from_slice(&logical_block.to_le_bytes());
-            sub_buf[new_base+4..new_base+6].copy_from_slice(&1u16.to_le_bytes());
-            sub_buf[new_base+6..new_base+8].copy_from_slice(&0u16.to_le_bytes());
-            sub_buf[new_base+8..new_base+12].copy_from_slice(&phys_block.to_le_bytes());
+            sub_buf[new_base..new_base + 4].copy_from_slice(&logical_block.to_le_bytes());
+            sub_buf[new_base + 4..new_base + 6].copy_from_slice(&1u16.to_le_bytes());
+            sub_buf[new_base + 6..new_base + 8].copy_from_slice(&0u16.to_le_bytes());
+            sub_buf[new_base + 8..new_base + 12].copy_from_slice(&phys_block.to_le_bytes());
             let ne = sub_entries + 1;
             sub_buf[2..4].copy_from_slice(&ne.to_le_bytes());
             self.write_block_data(sub_child as u32, &sub_buf[..bs])?;
@@ -292,9 +334,13 @@ impl MikuFS {
     }
 
     fn ext4_split_leaf(
-        &mut self, inode: &mut Inode, inode_num: u32,
-        old_block: u32, old_data: &[u8],
-        logical_block: u32, phys_block: u32,
+        &mut self,
+        inode: &mut Inode,
+        inode_num: u32,
+        old_block: u32,
+        old_data: &[u8],
+        logical_block: u32,
+        phys_block: u32,
         parent_idx: usize,
     ) -> Result<(), FsError> {
         let group = ((inode_num - 1) / self.inodes_per_group) as usize;
@@ -314,7 +360,7 @@ impl MikuFS {
         for i in 0..new_count as usize {
             let src = 12 + (split_at as usize + i) * 12;
             let dst = 12 + i * 12;
-            new_data[dst..dst+12].copy_from_slice(&old_data[src..src+12]);
+            new_data[dst..dst + 12].copy_from_slice(&old_data[src..src + 12]);
         }
         self.write_block_data(new_block, &new_data[..bs])?;
 
@@ -323,9 +369,8 @@ impl MikuFS {
         updated_old[2..4].copy_from_slice(&split_at.to_le_bytes());
         self.write_block_data(old_block, &updated_old[..bs])?;
 
-        let new_first_block = u32::from_le_bytes([
-            new_data[12], new_data[13], new_data[14], new_data[15],
-        ]);
+        let new_first_block =
+            u32::from_le_bytes([new_data[12], new_data[13], new_data[14], new_data[15]]);
 
         let header = inode.extent_header();
         if header.entries < header.max {
@@ -371,9 +416,7 @@ impl MikuFS {
         Ok(freed)
     }
 
-    fn ext4_free_extent_tree_block(
-        &mut self, block_num: u32, depth: u16,
-    ) -> Result<u32, FsError> {
+    fn ext4_free_extent_tree_block(&mut self, block_num: u32, depth: u16) -> Result<u32, FsError> {
         let bs = self.block_size as usize;
         let mut buf = [0u8; 4096];
         self.read_block_into(block_num, &mut buf[..bs])?;
@@ -383,11 +426,18 @@ impl MikuFS {
         if depth == 0 {
             for i in 0..entries as usize {
                 let base = 12 + i * 12;
-                let ee_len = u16::from_le_bytes([buf[base+4], buf[base+5]]);
+                let ee_len = u16::from_le_bytes([buf[base + 4], buf[base + 5]]);
                 let ee_start_lo = u32::from_le_bytes([
-                    buf[base+8], buf[base+9], buf[base+10], buf[base+11],
+                    buf[base + 8],
+                    buf[base + 9],
+                    buf[base + 10],
+                    buf[base + 11],
                 ]);
-                let actual_len = if ee_len > 32768 { ee_len - 32768 } else { ee_len } as u32;
+                let actual_len = if ee_len > 32768 {
+                    ee_len - 32768
+                } else {
+                    ee_len
+                } as u32;
                 for b in 0..actual_len {
                     let _ = self.free_block(ee_start_lo + b);
                     freed += 1;
@@ -397,7 +447,10 @@ impl MikuFS {
             for i in 0..entries as usize {
                 let base = 12 + i * 12;
                 let leaf_lo = u32::from_le_bytes([
-                    buf[base+4], buf[base+5], buf[base+6], buf[base+7],
+                    buf[base + 4],
+                    buf[base + 5],
+                    buf[base + 6],
+                    buf[base + 7],
                 ]);
                 if leaf_lo != 0 {
                     freed += self.ext4_free_extent_tree_block(leaf_lo, depth - 1)?;
@@ -428,9 +481,7 @@ impl MikuFS {
         Ok(total)
     }
 
-    fn ext4_count_tree_extents(
-        &mut self, block_num: u32, depth: u16,
-    ) -> Result<u32, FsError> {
+    fn ext4_count_tree_extents(&mut self, block_num: u32, depth: u16) -> Result<u32, FsError> {
         let bs = self.block_size as usize;
         let mut buf = [0u8; 4096];
         self.read_block_into(block_num, &mut buf[..bs])?;
@@ -441,9 +492,8 @@ impl MikuFS {
         let mut total = 0u32;
         for i in 0..entries as usize {
             let base = 12 + i * 12;
-            let leaf_lo = u32::from_le_bytes([
-                buf[base+4], buf[base+5], buf[base+6], buf[base+7],
-            ]);
+            let leaf_lo =
+                u32::from_le_bytes([buf[base + 4], buf[base + 5], buf[base + 6], buf[base + 7]]);
             if leaf_lo != 0 {
                 total += self.ext4_count_tree_extents(leaf_lo, depth - 1)?;
             }

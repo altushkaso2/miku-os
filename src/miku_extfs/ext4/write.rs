@@ -1,9 +1,12 @@
-use crate::miku_extfs::{MikuFS, FsError};
 use crate::miku_extfs::structs::*;
+use crate::miku_extfs::{FsError, MikuFS};
 
 impl MikuFS {
     pub fn ext4_ensure_block(
-        &mut self, inode: &mut Inode, inode_num: u32, logical_block: u32,
+        &mut self,
+        inode: &mut Inode,
+        inode_num: u32,
+        logical_block: u32,
     ) -> Result<u32, FsError> {
         if !inode.uses_extents() {
             return self.ensure_block(inode, inode_num, logical_block);
@@ -33,7 +36,10 @@ impl MikuFS {
     }
 
     pub fn ext4_write_file(
-        &mut self, inode_num: u32, data: &[u8], offset: u64,
+        &mut self,
+        inode_num: u32,
+        data: &[u8],
+        offset: u64,
     ) -> Result<usize, FsError> {
         let mut inode = self.read_inode(inode_num)?;
         if !inode.is_regular() {
@@ -52,8 +58,7 @@ impl MikuFS {
             } else {
                 let mut block_buf = [0u8; 4096];
                 self.read_block_into(phys_block, &mut block_buf[..bs])?;
-                block_buf[block_off..block_off + chunk]
-                    .copy_from_slice(&data[done..done + chunk]);
+                block_buf[block_off..block_off + chunk].copy_from_slice(&data[done..done + chunk]);
                 self.write_block_data(phys_block, &block_buf[..bs])?;
             }
             done += chunk;
@@ -69,7 +74,10 @@ impl MikuFS {
     }
 
     pub fn ext4_create_file(
-        &mut self, parent_ino: u32, name: &str, mode: u16,
+        &mut self,
+        parent_ino: u32,
+        name: &str,
+        mode: u16,
     ) -> Result<u32, FsError> {
         let parent = self.read_inode(parent_ino)?;
         if !parent.is_directory() {
@@ -89,7 +97,10 @@ impl MikuFS {
     }
 
     pub fn ext4_create_dir(
-        &mut self, parent_ino: u32, name: &str, mode: u16,
+        &mut self,
+        parent_ino: u32,
+        name: &str,
+        mode: u16,
     ) -> Result<u32, FsError> {
         let parent = self.read_inode(parent_ino)?;
         if !parent.is_directory() {
@@ -120,12 +131,12 @@ impl MikuFS {
         block_data[7] = FT_DIR;
         block_data[8] = b'.';
         let off2 = dot_rec_len as usize;
-        block_data[off2..off2+4].copy_from_slice(&parent_ino.to_le_bytes());
-        block_data[off2+4..off2+6].copy_from_slice(&dotdot_rec_len.to_le_bytes());
-        block_data[off2+6] = 2;
-        block_data[off2+7] = FT_DIR;
-        block_data[off2+8] = b'.';
-        block_data[off2+9] = b'.';
+        block_data[off2..off2 + 4].copy_from_slice(&parent_ino.to_le_bytes());
+        block_data[off2 + 4..off2 + 6].copy_from_slice(&dotdot_rec_len.to_le_bytes());
+        block_data[off2 + 6] = 2;
+        block_data[off2 + 7] = FT_DIR;
+        block_data[off2 + 8] = b'.';
+        block_data[off2 + 9] = b'.';
         self.write_block_data(dir_block, &block_data[..bs])?;
         self.add_dir_entry(parent_ino, name, new_ino, FT_DIR)?;
 
@@ -163,9 +174,7 @@ impl MikuFS {
         Ok(())
     }
 
-    pub fn ext4_delete_file(
-        &mut self, parent_ino: u32, name: &str,
-    ) -> Result<(), FsError> {
+    pub fn ext4_delete_file(&mut self, parent_ino: u32, name: &str) -> Result<(), FsError> {
         let target_ino = match self.ext2_lookup_in_dir(parent_ino, name)? {
             Some(ino) => ino,
             None => return Err(FsError::NotFound),
@@ -184,9 +193,7 @@ impl MikuFS {
         Ok(())
     }
 
-    pub fn ext4_delete_dir(
-        &mut self, parent_ino: u32, name: &str,
-    ) -> Result<(), FsError> {
+    pub fn ext4_delete_dir(&mut self, parent_ino: u32, name: &str) -> Result<(), FsError> {
         let target_ino = match self.ext2_lookup_in_dir(parent_ino, name)? {
             Some(ino) => ino,
             None => return Err(FsError::NotFound),
@@ -221,16 +228,17 @@ impl MikuFS {
         Ok(())
     }
 
-    pub fn ext4_append_file(
-        &mut self, inode_num: u32, data: &[u8],
-    ) -> Result<usize, FsError> {
+    pub fn ext4_append_file(&mut self, inode_num: u32, data: &[u8]) -> Result<usize, FsError> {
         let inode = self.read_inode(inode_num)?;
         let offset = inode.size();
         self.ext4_write_file(inode_num, data, offset)
     }
 
     pub fn ext4_copy_file(
-        &mut self, src_ino: u32, dst_parent_ino: u32, dst_name: &str,
+        &mut self,
+        src_ino: u32,
+        dst_parent_ino: u32,
+        dst_name: &str,
     ) -> Result<u32, FsError> {
         let src_inode = self.read_inode(src_ino)?;
         if !src_inode.is_regular() {
@@ -250,7 +258,9 @@ impl MikuFS {
                 let to_read = ((size - offset) as usize).min(512);
                 let src_inode = self.read_inode(src_ino)?;
                 let n = self.read_file(&src_inode, offset, &mut buf[..to_read])?;
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 if self.superblock.has_extents() {
                     self.ext4_write_file(new_ino, &buf[..n], offset)?;
                 } else {

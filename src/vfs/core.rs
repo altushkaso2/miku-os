@@ -23,8 +23,7 @@ static mut VFS_STORAGE: VfsStorage = VfsStorage {
     data: core::mem::MaybeUninit::uninit(),
 };
 
-static VFS_INITIALIZED: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+static VFS_INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 pub fn init_vfs() {
     crate::serial_println!("[vfs] init start");
@@ -53,10 +52,7 @@ pub fn init_vfs() {
             core::ptr::addr_of_mut!((*ptr).ctx),
             ProcessContext::root_context(),
         );
-        core::ptr::write(
-            core::ptr::addr_of_mut!((*ptr).ext2_mount_active),
-            false,
-        );
+        core::ptr::write(core::ptr::addr_of_mut!((*ptr).ext2_mount_active), false);
 
         let vfs = &mut *ptr;
         vfs.bootstrap();
@@ -340,7 +336,11 @@ impl MikuVFS {
         }
 
         let parent = self.nodes[link_id].parent as usize;
-        let start = if target_str.starts_with('/') { 0 } else { parent };
+        let start = if target_str.starts_with('/') {
+            0
+        } else {
+            parent
+        };
 
         let mut current = start;
         for component in target_str.split('/') {
@@ -427,7 +427,17 @@ impl MikuVFS {
                 symlink_len = l as u8;
             }
 
-            Ok((child_ino, kind, perm, size, uid, gid, nlinks, symlink_target, symlink_len))
+            Ok((
+                child_ino,
+                kind,
+                perm,
+                size,
+                uid,
+                gid,
+                nlinks,
+                symlink_target,
+                symlink_len,
+            ))
         });
 
         let info = match result {
@@ -463,7 +473,10 @@ impl MikuVFS {
             self.nodes[id].symlink_target.len = symlink_len;
         }
 
-        if !self.nodes[parent_vnode].children.insert(name, id as InodeId) {
+        if !self.nodes[parent_vnode]
+            .children
+            .insert(name, id as InodeId)
+        {
             self.nodes[id].active = false;
             return Err(VfsError::NoSpace);
         }
@@ -499,9 +512,10 @@ impl MikuVFS {
 
         let result = crate::commands::ext2_cmds::with_ext2_pub(|fs| {
             let inode = fs.read_inode(ext2_ino).map_err(|_| VfsError::IoError)?;
-            let mut entries =
-                [const { crate::miku_extfs::structs::DirEntry::empty() }; 64];
-            let count = fs.read_dir(&inode, &mut entries).map_err(|_| VfsError::IoError)?;
+            let mut entries = [const { crate::miku_extfs::structs::DirEntry::empty() }; 64];
+            let count = fs
+                .read_dir(&inode, &mut entries)
+                .map_err(|_| VfsError::IoError)?;
 
             for i in 0..count {
                 let e = &entries[i];
@@ -571,7 +585,10 @@ impl MikuVFS {
                 self.nodes[id].ext2_ino = ci.ino;
                 self.nodes[id].children_loaded = false;
 
-                if !self.nodes[dir_vnode].children.insert(name_str, id as InodeId) {
+                if !self.nodes[dir_vnode]
+                    .children
+                    .insert(name_str, id as InodeId)
+                {
                     self.nodes[id].active = false;
                 }
             }
@@ -590,10 +607,8 @@ impl MikuVFS {
             }
             let mut target_buf = [0u8; NAME_LEN];
             let tlen = self.nodes[id].symlink_target.len as usize;
-            target_buf[..tlen]
-                .copy_from_slice(&self.nodes[id].symlink_target.data[..tlen]);
-            let target =
-                unsafe { core::str::from_utf8_unchecked(&target_buf[..tlen]) };
+            target_buf[..tlen].copy_from_slice(&self.nodes[id].symlink_target.data[..tlen]);
+            let target = unsafe { core::str::from_utf8_unchecked(&target_buf[..tlen]) };
             if target.is_empty() {
                 return Err(VfsError::InvalidPath);
             }
@@ -1516,7 +1531,8 @@ impl MikuVFS {
 
         for cid in self.nodes[eff].children.find_by_hash(new_h) {
             let c = cid as usize;
-            if c < MAX_VNODES && self.nodes[c].active && self.nodes[c].name_eq(new_name) && c != id {
+            if c < MAX_VNODES && self.nodes[c].active && self.nodes[c].name_eq(new_name) && c != id
+            {
                 return Err(VfsError::AlreadyExists);
             }
         }
@@ -1540,7 +1556,9 @@ impl MikuVFS {
             };
 
             self.nodes[id].name = NameBuf::from_str(rollback_name);
-            let _ = self.nodes[pid].children.insert(rollback_name, id as InodeId);
+            let _ = self.nodes[pid]
+                .children
+                .insert(rollback_name, id as InodeId);
             return Err(VfsError::NoSpace);
         }
 

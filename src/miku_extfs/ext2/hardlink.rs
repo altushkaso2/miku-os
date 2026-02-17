@@ -1,15 +1,18 @@
-use crate::miku_extfs::{MikuFS, FsError};
 use crate::miku_extfs::structs::*;
+use crate::miku_extfs::{FsError, MikuFS};
 
 impl MikuFS {
     pub fn ext2_hardlink(
-        &mut self, parent_ino: u32, name: &str, target_ino: u32,
+        &mut self,
+        parent_ino: u32,
+        name: &str,
+        target_ino: u32,
     ) -> Result<(), FsError> {
         let parent = self.read_inode(parent_ino)?;
         if !parent.is_directory() {
             return Err(FsError::NotDirectory);
         }
-        
+
         let target = self.read_inode(target_ino)?;
         if target.is_directory() {
             return Err(FsError::IsDirectory);
@@ -17,7 +20,7 @@ impl MikuFS {
 
         match self.lookup(&parent, name) {
             Ok(_) => return Err(FsError::AlreadyExists),
-            Err(FsError::NotFound) => {},
+            Err(FsError::NotFound) => {}
             Err(e) => return Err(e),
         }
 
@@ -25,21 +28,19 @@ impl MikuFS {
             InodeType::Symlink => FT_SYMLINK,
             _ => FT_REG_FILE,
         };
-        
+
         self.add_dir_entry(parent_ino, name, target_ino, ft)?;
-        
+
         let mut target = self.read_inode(target_ino)?;
         target.set_links_count(target.links_count() + 1);
         let now = self.get_timestamp();
         target.set_ctime(now);
-        
+
         self.write_inode(target_ino, &target)?;
         Ok(())
     }
 
-    pub fn ext2_unlink_hardlink(
-        &mut self, parent_ino: u32, name: &str,
-    ) -> Result<(), FsError> {
+    pub fn ext2_unlink_hardlink(&mut self, parent_ino: u32, name: &str) -> Result<(), FsError> {
         let parent_inode = self.read_inode(parent_ino)?;
         let target_ino = match self.lookup(&parent_inode, name) {
             Ok(ino) => ino,
@@ -66,14 +67,14 @@ impl MikuFS {
             } else if !inode.is_symlink() || !inode.is_fast_symlink() {
                 self.free_all_blocks(&inode)?;
             }
-            
+
             let now = self.get_timestamp();
             inode.set_dtime(now);
             inode.set_links_count(0);
-            
+
             self.write_inode(target_ino, &inode)?;
             self.free_inode(target_ino)?;
         }
         Ok(())
     }
-} 
+}
