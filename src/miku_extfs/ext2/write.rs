@@ -1,5 +1,5 @@
-use crate::miku_extfs::{MikuFS, FsError};
 use crate::miku_extfs::structs::*;
+use crate::miku_extfs::{FsError, MikuFS};
 
 pub struct TreeEntry {
     pub name: [u8; 60],
@@ -115,8 +115,7 @@ impl MikuFS {
             } else {
                 let mut block_buf = [0u8; 4096];
                 self.read_block_into(phys_block, &mut block_buf[..bs])?;
-                block_buf[block_off..block_off + chunk]
-                    .copy_from_slice(&data[done..done + chunk]);
+                block_buf[block_off..block_off + chunk].copy_from_slice(&data[done..done + chunk]);
                 self.write_block_data(phys_block, &block_buf[..bs])?;
             }
 
@@ -278,11 +277,7 @@ impl MikuFS {
         Ok(new_ino)
     }
 
-    pub fn ext2_delete_file(
-        &mut self,
-        parent_ino: u32,
-        name: &str,
-    ) -> Result<(), FsError> {
+    pub fn ext2_delete_file(&mut self, parent_ino: u32, name: &str) -> Result<(), FsError> {
         let target_ino = match self.ext2_lookup_in_dir(parent_ino, name)? {
             Some(ino) => ino,
             None => return Err(FsError::NotFound),
@@ -304,11 +299,7 @@ impl MikuFS {
         Ok(())
     }
 
-    pub fn ext2_delete_dir(
-        &mut self,
-        parent_ino: u32,
-        name: &str,
-    ) -> Result<(), FsError> {
+    pub fn ext2_delete_dir(&mut self, parent_ino: u32, name: &str) -> Result<(), FsError> {
         let target_ino = match self.ext2_lookup_in_dir(parent_ino, name)? {
             Some(ino) => ino,
             None => return Err(FsError::NotFound),
@@ -345,11 +336,7 @@ impl MikuFS {
         Ok(())
     }
 
-    pub fn ext2_delete_recursive(
-        &mut self,
-        parent_ino: u32,
-        name: &str,
-    ) -> Result<u32, FsError> {
+    pub fn ext2_delete_recursive(&mut self, parent_ino: u32, name: &str) -> Result<u32, FsError> {
         let target_ino = match self.ext2_lookup_in_dir(parent_ino, name)? {
             Some(ino) => ino,
             None => return Err(FsError::NotFound),
@@ -538,11 +525,7 @@ impl MikuFS {
         Ok(())
     }
 
-    pub fn ext2_chmod(
-        &mut self,
-        inode_num: u32,
-        mode: u16,
-    ) -> Result<(), FsError> {
+    pub fn ext2_chmod(&mut self, inode_num: u32, mode: u16) -> Result<(), FsError> {
         let mut inode = self.read_inode(inode_num)?;
         let type_bits = inode.mode() & 0xF000;
         inode.set_mode(type_bits | (mode & 0o7777));
@@ -551,12 +534,7 @@ impl MikuFS {
         self.write_inode(inode_num, &inode)
     }
 
-    pub fn ext2_chown(
-        &mut self,
-        inode_num: u32,
-        uid: u16,
-        gid: u16,
-    ) -> Result<(), FsError> {
+    pub fn ext2_chown(&mut self, inode_num: u32, uid: u16, gid: u16) -> Result<(), FsError> {
         let mut inode = self.read_inode(inode_num)?;
         inode.set_uid(uid);
         inode.set_gid(gid);
@@ -605,20 +583,13 @@ impl MikuFS {
         Ok(inode.size())
     }
 
-    pub fn ext2_append_file(
-        &mut self,
-        inode_num: u32,
-        data: &[u8],
-    ) -> Result<usize, FsError> {
+    pub fn ext2_append_file(&mut self, inode_num: u32, data: &[u8]) -> Result<usize, FsError> {
         let inode = self.read_inode(inode_num)?;
         let offset = inode.size();
         self.ext2_write_file(inode_num, data, offset)
     }
 
-    pub fn ext2_dir_size(
-        &mut self,
-        dir_ino: u32,
-    ) -> Result<(u32, u64), FsError> {
+    pub fn ext2_dir_size(&mut self, dir_ino: u32) -> Result<(u32, u64), FsError> {
         let inode = self.read_inode(dir_ino)?;
         if !inode.is_directory() {
             return Err(FsError::NotDirectory);
@@ -742,7 +713,9 @@ impl MikuFS {
         }
 
         for g in 0..self.group_count as usize {
-            if g >= 32 { break; }
+            if g >= 32 {
+                break;
+            }
             let bb = self.groups[g].block_bitmap();
             let ib = self.groups[g].inode_bitmap();
             let it = self.groups[g].inode_table();
@@ -791,11 +764,7 @@ impl MikuFS {
         result
     }
 
-    pub fn ext2_lookup_in_dir(
-        &mut self,
-        dir_ino: u32,
-        name: &str,
-    ) -> Result<Option<u32>, FsError> {
+    pub fn ext2_lookup_in_dir(&mut self, dir_ino: u32, name: &str) -> Result<Option<u32>, FsError> {
         let inode = self.read_inode(dir_ino)?;
         let mut entries = [const { DirEntry::empty() }; 64];
         let count = self.read_dir(&inode, &mut entries)?;
@@ -860,12 +829,13 @@ impl MikuFS {
                 }
 
                 let rec_ino = u32::from_le_bytes([
-                    block_data[pos], block_data[pos + 1],
-                    block_data[pos + 2], block_data[pos + 3],
+                    block_data[pos],
+                    block_data[pos + 1],
+                    block_data[pos + 2],
+                    block_data[pos + 3],
                 ]);
-                let rec_len = u16::from_le_bytes([
-                    block_data[pos + 4], block_data[pos + 5],
-                ]) as usize;
+                let rec_len =
+                    u16::from_le_bytes([block_data[pos + 4], block_data[pos + 5]]) as usize;
                 let rec_name_len = block_data[pos + 6] as usize;
 
                 if rec_len == 0 || rec_len > bs {
@@ -888,8 +858,7 @@ impl MikuFS {
                 if free_space >= needed {
                     if rec_ino != 0 {
                         let new_rec_len = actual_size as u16;
-                        block_data[pos + 4..pos + 6]
-                            .copy_from_slice(&new_rec_len.to_le_bytes());
+                        block_data[pos + 4..pos + 6].copy_from_slice(&new_rec_len.to_le_bytes());
                         pos += actual_size;
                     }
 
@@ -900,8 +869,7 @@ impl MikuFS {
                     };
 
                     block_data[pos..pos + 4].copy_from_slice(&child_ino.to_le_bytes());
-                    block_data[pos + 4..pos + 6]
-                        .copy_from_slice(&(remaining as u16).to_le_bytes());
+                    block_data[pos + 4..pos + 6].copy_from_slice(&(remaining as u16).to_le_bytes());
                     block_data[pos + 6] = name_len as u8;
                     block_data[pos + 7] = file_type;
                     block_data[pos + 8..pos + 8 + name_len].copy_from_slice(name_bytes);
@@ -943,11 +911,7 @@ impl MikuFS {
         Ok(())
     }
 
-    pub fn remove_dir_entry(
-        &mut self,
-        dir_ino: u32,
-        name: &str,
-    ) -> Result<(), FsError> {
+    pub fn remove_dir_entry(&mut self, dir_ino: u32, name: &str) -> Result<(), FsError> {
         let inode = self.read_inode(dir_ino)?;
         let bs = self.block_size as usize;
         let name_bytes = name.as_bytes();
@@ -976,12 +940,13 @@ impl MikuFS {
                 }
 
                 let rec_ino = u32::from_le_bytes([
-                    block_data[pos], block_data[pos + 1],
-                    block_data[pos + 2], block_data[pos + 3],
+                    block_data[pos],
+                    block_data[pos + 1],
+                    block_data[pos + 2],
+                    block_data[pos + 3],
                 ]);
-                let rec_len = u16::from_le_bytes([
-                    block_data[pos + 4], block_data[pos + 5],
-                ]) as usize;
+                let rec_len =
+                    u16::from_le_bytes([block_data[pos + 4], block_data[pos + 5]]) as usize;
                 let rec_name_len = block_data[pos + 6] as usize;
 
                 if rec_len == 0 {
@@ -994,12 +959,10 @@ impl MikuFS {
                     && &block_data[pos + 8..pos + 8 + rec_name_len] == name_bytes
                 {
                     if let Some(pp) = prev_pos {
-                        let prev_rec_len = u16::from_le_bytes([
-                            block_data[pp + 4], block_data[pp + 5],
-                        ]) as usize;
+                        let prev_rec_len =
+                            u16::from_le_bytes([block_data[pp + 4], block_data[pp + 5]]) as usize;
                         let merged = prev_rec_len + rec_len;
-                        block_data[pp + 4..pp + 6]
-                            .copy_from_slice(&(merged as u16).to_le_bytes());
+                        block_data[pp + 4..pp + 6].copy_from_slice(&(merged as u16).to_le_bytes());
                     } else {
                         block_data[pos..pos + 4].copy_from_slice(&0u32.to_le_bytes());
                     }

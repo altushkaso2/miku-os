@@ -532,7 +532,7 @@ impl GroupDesc {
             self.write_u16(48, (new_val >> 16) as u16);
         }
     }
-} 
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -949,21 +949,28 @@ impl Inode {
     }
 
     pub fn set_extent_at_raw(
-        &mut self, idx: usize, block: u32, len: u16, start_hi: u16, start_lo: u32,
+        &mut self,
+        idx: usize,
+        block: u32,
+        len: u16,
+        start_hi: u16,
+        start_lo: u32,
     ) {
         let base = 52 + idx * 12;
-        if base + 12 > 100 { return; }
+        if base + 12 > 100 {
+            return;
+        }
         self.write_u32(base, block);
         self.write_u16(base + 4, len);
         self.write_u16(base + 6, start_hi);
         self.write_u32(base + 8, start_lo);
     }
 
-    pub fn set_extent_idx_at_raw(
-        &mut self, idx: usize, block: u32, leaf_lo: u32, leaf_hi: u16,
-    ) {
+    pub fn set_extent_idx_at_raw(&mut self, idx: usize, block: u32, leaf_lo: u32, leaf_hi: u16) {
         let base = 52 + idx * 12;
-        if base + 12 > 100 { return; }
+        if base + 12 > 100 {
+            return;
+        }
         self.write_u32(base, block);
         self.write_u32(base + 4, leaf_lo);
         self.write_u16(base + 8, leaf_hi);
@@ -972,7 +979,9 @@ impl Inode {
 
     pub fn set_extent_len_at(&mut self, idx: usize, len: u16) {
         let base = 52 + idx * 12;
-        if base + 6 > 100 { return; }
+        if base + 6 > 100 {
+            return;
+        }
         self.write_u16(base + 4, len);
     }
 

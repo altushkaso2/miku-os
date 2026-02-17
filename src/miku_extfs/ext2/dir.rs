@@ -1,14 +1,10 @@
-use crate::miku_extfs::{MikuFS, FsError};
 use crate::miku_extfs::structs::*;
+use crate::miku_extfs::{FsError, MikuFS};
 
 pub const EXT2_MAX_DIR_ENTRIES: usize = 64;
 
 impl MikuFS {
-    pub fn read_dir(
-        &mut self,
-        inode: &Inode,
-        entries: &mut [DirEntry],
-    ) -> Result<usize, FsError> {
+    pub fn read_dir(&mut self, inode: &Inode, entries: &mut [DirEntry]) -> Result<usize, FsError> {
         if !inode.is_directory() {
             return Err(FsError::NotDirectory);
         }
@@ -40,12 +36,12 @@ impl MikuFS {
                 }
 
                 let raw_inode = u32::from_le_bytes([
-                    block_buf[pos], block_buf[pos + 1],
-                    block_buf[pos + 2], block_buf[pos + 3],
+                    block_buf[pos],
+                    block_buf[pos + 1],
+                    block_buf[pos + 2],
+                    block_buf[pos + 3],
                 ]);
-                let rec_len = u16::from_le_bytes([
-                    block_buf[pos + 4], block_buf[pos + 5],
-                ]) as usize;
+                let rec_len = u16::from_le_bytes([block_buf[pos + 4], block_buf[pos + 5]]) as usize;
                 let name_len = block_buf[pos + 6] as usize;
                 let file_type = block_buf[pos + 7];
 
@@ -59,8 +55,7 @@ impl MikuFS {
                     entry.file_type = file_type;
                     let copy_len = name_len.min(MAX_NAME);
                     entry.name_len = copy_len as u8;
-                    entry.name[..copy_len]
-                        .copy_from_slice(&block_buf[pos + 8..pos + 8 + copy_len]);
+                    entry.name[..copy_len].copy_from_slice(&block_buf[pos + 8..pos + 8 + copy_len]);
                     entries[count] = entry;
                     count += 1;
                 }
@@ -74,11 +69,7 @@ impl MikuFS {
         Ok(count)
     }
 
-    pub fn lookup(
-        &mut self,
-        dir_inode: &Inode,
-        name: &str,
-    ) -> Result<u32, FsError> {
+    pub fn lookup(&mut self, dir_inode: &Inode, name: &str) -> Result<u32, FsError> {
         let mut entries = [const { DirEntry::empty() }; EXT2_MAX_DIR_ENTRIES];
         let count = self.read_dir(dir_inode, &mut entries)?;
         let name_bytes = name.as_bytes();
@@ -121,4 +112,4 @@ impl MikuFS {
 
         Ok(current_ino)
     }
-} 
+}

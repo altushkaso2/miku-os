@@ -27,7 +27,7 @@ pub const PAGE_SIZE: usize = 512;
 pub const BLOCK_SIZE: usize = 512;
 pub const MAX_SYMLINK_DEPTH: usize = 8;
 pub const MAX_PATH_DEPTH: usize = 32;
-pub const DIRECT_BLOCKS: usize = 64; 
+pub const DIRECT_BLOCKS: usize = 64;
 pub const INDIRECT_ENTRIES: usize = 64;
 pub const MAX_FILE_SIZE: u64 = (DIRECT_BLOCKS as u64) * (PAGE_SIZE as u64);
 
@@ -168,24 +168,58 @@ impl FileMode {
     pub const fn new(mode: u16) -> Self {
         Self(mode & 0o7777)
     }
-    pub const fn default_file() -> Self { Self(0o644) }
-    pub const fn default_dir() -> Self { Self(0o755) }
-    pub const fn default_symlink() -> Self { Self(0o777) }
-    pub const fn default_dev() -> Self { Self(0o666) }
-    pub const fn default_pipe() -> Self { Self(0o600) }
+    pub const fn default_file() -> Self {
+        Self(0o644)
+    }
+    pub const fn default_dir() -> Self {
+        Self(0o755)
+    }
+    pub const fn default_symlink() -> Self {
+        Self(0o777)
+    }
+    pub const fn default_dev() -> Self {
+        Self(0o666)
+    }
+    pub const fn default_pipe() -> Self {
+        Self(0o600)
+    }
 
-    pub const fn owner_read(&self) -> bool { self.0 & 0o400 != 0 }
-    pub const fn owner_write(&self) -> bool { self.0 & 0o200 != 0 }
-    pub const fn owner_exec(&self) -> bool { self.0 & 0o100 != 0 }
-    pub const fn group_read(&self) -> bool { self.0 & 0o040 != 0 }
-    pub const fn group_write(&self) -> bool { self.0 & 0o020 != 0 }
-    pub const fn group_exec(&self) -> bool { self.0 & 0o010 != 0 }
-    pub const fn other_read(&self) -> bool { self.0 & 0o004 != 0 }
-    pub const fn other_write(&self) -> bool { self.0 & 0o002 != 0 }
-    pub const fn other_exec(&self) -> bool { self.0 & 0o001 != 0 }
-    pub const fn setuid(&self) -> bool { self.0 & 0o4000 != 0 }
-    pub const fn setgid(&self) -> bool { self.0 & 0o2000 != 0 }
-    pub const fn sticky(&self) -> bool { self.0 & 0o1000 != 0 }
+    pub const fn owner_read(&self) -> bool {
+        self.0 & 0o400 != 0
+    }
+    pub const fn owner_write(&self) -> bool {
+        self.0 & 0o200 != 0
+    }
+    pub const fn owner_exec(&self) -> bool {
+        self.0 & 0o100 != 0
+    }
+    pub const fn group_read(&self) -> bool {
+        self.0 & 0o040 != 0
+    }
+    pub const fn group_write(&self) -> bool {
+        self.0 & 0o020 != 0
+    }
+    pub const fn group_exec(&self) -> bool {
+        self.0 & 0o010 != 0
+    }
+    pub const fn other_read(&self) -> bool {
+        self.0 & 0o004 != 0
+    }
+    pub const fn other_write(&self) -> bool {
+        self.0 & 0o002 != 0
+    }
+    pub const fn other_exec(&self) -> bool {
+        self.0 & 0o001 != 0
+    }
+    pub const fn setuid(&self) -> bool {
+        self.0 & 0o4000 != 0
+    }
+    pub const fn setgid(&self) -> bool {
+        self.0 & 0o2000 != 0
+    }
+    pub const fn sticky(&self) -> bool {
+        self.0 & 0o1000 != 0
+    }
 
     pub fn apply_umask(self, umask: u16) -> Self {
         Self::new(self.0 & !umask)
@@ -210,18 +244,39 @@ impl FileMode {
             VNodeKind::Socket => b's',
             _ => b'-',
         };
-        if self.owner_read()  { out[1] = b'r'; }
-        if self.owner_write() { out[2] = b'w'; }
-        if self.owner_exec()  { out[3] = if self.setuid() { b's' } else { b'x' }; }
-        else if self.setuid() { out[3] = b'S'; }
-        if self.group_read()  { out[4] = b'r'; }
-        if self.group_write() { out[5] = b'w'; }
-        if self.group_exec()  { out[6] = if self.setgid() { b's' } else { b'x' }; }
-        else if self.setgid() { out[6] = b'S'; }
-        if self.other_read()  { out[7] = b'r'; }
-        if self.other_write() { out[8] = b'w'; }
-        if self.other_exec()  { out[9] = if self.sticky() { b't' } else { b'x' }; }
-        else if self.sticky() { out[9] = b'T'; }
+        if self.owner_read() {
+            out[1] = b'r';
+        }
+        if self.owner_write() {
+            out[2] = b'w';
+        }
+        if self.owner_exec() {
+            out[3] = if self.setuid() { b's' } else { b'x' };
+        } else if self.setuid() {
+            out[3] = b'S';
+        }
+        if self.group_read() {
+            out[4] = b'r';
+        }
+        if self.group_write() {
+            out[5] = b'w';
+        }
+        if self.group_exec() {
+            out[6] = if self.setgid() { b's' } else { b'x' };
+        } else if self.setgid() {
+            out[6] = b'S';
+        }
+        if self.other_read() {
+            out[7] = b'r';
+        }
+        if self.other_write() {
+            out[8] = b'w';
+        }
+        if self.other_exec() {
+            out[9] = if self.sticky() { b't' } else { b'x' };
+        } else if self.sticky() {
+            out[9] = b'T';
+        }
         out
     }
 }
@@ -253,10 +308,22 @@ impl OpenFlags {
     pub const CLOEXEC: u32 = 0x0800;
     pub const NOATIME: u32 = 0x1000;
 
-    #[inline] pub const fn has(&self, flag: u32) -> bool { self.0 & flag != 0 }
-    #[inline] pub const fn readable(&self) -> bool { self.has(Self::READ) }
-    #[inline] pub const fn writable(&self) -> bool { self.has(Self::WRITE) }
-    #[inline] pub const fn is_rdwr(&self) -> bool { self.0 & Self::RDWR == Self::RDWR }
+    #[inline]
+    pub const fn has(&self, flag: u32) -> bool {
+        self.0 & flag != 0
+    }
+    #[inline]
+    pub const fn readable(&self) -> bool {
+        self.has(Self::READ)
+    }
+    #[inline]
+    pub const fn writable(&self) -> bool {
+        self.has(Self::WRITE)
+    }
+    #[inline]
+    pub const fn is_rdwr(&self) -> bool {
+        self.0 & Self::RDWR == Self::RDWR
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -368,15 +435,28 @@ impl Credentials {
     pub const fn user(uid: u16, gid: u16) -> Self {
         let mut groups = [0u16; MAX_GROUPS];
         groups[0] = gid;
-        Self { uid, gid, euid: uid, egid: gid, groups, ngroups: 1 }
+        Self {
+            uid,
+            gid,
+            euid: uid,
+            egid: gid,
+            groups,
+            ngroups: 1,
+        }
     }
 
-    pub const fn is_root(&self) -> bool { self.euid == 0 }
+    pub const fn is_root(&self) -> bool {
+        self.euid == 0
+    }
 
     pub fn in_group(&self, gid: u16) -> bool {
-        if self.egid == gid { return true; }
+        if self.egid == gid {
+            return true;
+        }
         for i in 0..self.ngroups as usize {
-            if i < MAX_GROUPS && self.groups[i] == gid { return true; }
+            if i < MAX_GROUPS && self.groups[i] == gid {
+                return true;
+            }
         }
         false
     }
@@ -421,7 +501,10 @@ pub struct NameBuf {
 
 impl NameBuf {
     pub const fn empty() -> Self {
-        Self { data: [0; NAME_LEN], len: 0 }
+        Self {
+            data: [0; NAME_LEN],
+            len: 0,
+        }
     }
 
     pub fn from_str(s: &str) -> Self {
@@ -443,17 +526,17 @@ impl NameBuf {
     }
 
     pub fn as_str(&self) -> &str {
-        core::str::from_utf8(&self.data[..self.len as usize])
-            .unwrap_or("\u{FFFD}")
+        core::str::from_utf8(&self.data[..self.len as usize]).unwrap_or("\u{FFFD}")
     }
 
     pub fn eq_str(&self, s: &str) -> bool {
         let bytes = s.as_bytes();
-        self.len as usize == bytes.len()
-            && &self.data[..self.len as usize] == bytes
+        self.len as usize == bytes.len() && &self.data[..self.len as usize] == bytes
     }
 
-    pub fn is_empty(&self) -> bool { self.len == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 }
 
 impl core::fmt::Debug for NameBuf {
@@ -469,7 +552,10 @@ pub struct PathBuf {
 
 impl PathBuf {
     pub const fn empty() -> Self {
-        Self { data: [0; 256], len: 0 }
+        Self {
+            data: [0; 256],
+            len: 0,
+        }
     }
 
     pub fn from_str(s: &str) -> Self {
@@ -499,7 +585,9 @@ impl PathBuf {
         self.len += len;
     }
 
-    pub fn clear(&mut self) { self.len = 0; }
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
 
     pub fn set_root(&mut self) {
         self.data[0] = b'/';

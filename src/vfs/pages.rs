@@ -65,34 +65,34 @@ impl PageCache {
     }
 
     fn evict_and_alloc(&mut self) -> VfsResult<PageId> {
-    let mut candidate = None;
-    let mut current = self.lru.tail;
-    while current != INVALID_ID {
-        let idx = current as usize;
-        if idx < MAX_DATA_PAGES && !self.pages[idx].dirty {
-            candidate = Some(current);
-            break;
+        let mut candidate = None;
+        let mut current = self.lru.tail;
+        while current != INVALID_ID {
+            let idx = current as usize;
+            if idx < MAX_DATA_PAGES && !self.pages[idx].dirty {
+                candidate = Some(current);
+                break;
+            }
+            current = self.lru.nodes[idx].prev;
         }
-        current = self.lru.nodes[idx].prev;
+
+        let evict_id = match candidate {
+            Some(id) => id,
+            None => return Err(VfsError::NoSpace),
+        };
+
+        let idx = evict_id as usize;
+        self.lru.remove(evict_id);
+        self.pages[idx].clear();
+        self.slab.free(idx);
+        self.evictions += 1;
+
+        let new_idx = self.slab.alloc()?;
+        let pid = new_idx as PageId;
+        self.pages[new_idx].valid = true;
+        self.lru.push_front(pid);
+        Ok(pid)
     }
-
-    let evict_id = match candidate {
-        Some(id) => id,
-        None => return Err(VfsError::NoSpace),
-    };
-
-    let idx = evict_id as usize;
-    self.lru.remove(evict_id);
-    self.pages[idx].clear();
-    self.slab.free(idx);
-    self.evictions += 1;
-
-    let new_idx = self.slab.alloc()?;
-    let pid = new_idx as PageId;
-    self.pages[new_idx].valid = true;
-    self.lru.push_front(pid);
-    Ok(pid)
-}
 
     pub fn free_page(&mut self, page_id: PageId) {
         let idx = page_id as usize;

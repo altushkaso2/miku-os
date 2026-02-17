@@ -1,6 +1,6 @@
 use crate::commands;
 use crate::{console, cprint, cprintln, print, println, serial_println};
-use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
+use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 use lazy_static::lazy_static;
 use pc_keyboard::DecodedKey;
 use spin::Mutex;

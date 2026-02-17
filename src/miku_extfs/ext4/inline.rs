@@ -1,9 +1,12 @@
-use crate::miku_extfs::{MikuFS, FsError};
 use crate::miku_extfs::structs::*;
+use crate::miku_extfs::{FsError, MikuFS};
 
 impl MikuFS {
     pub fn ext4_read_inline(
-        &mut self, inode: &Inode, offset: u64, buf: &mut [u8],
+        &mut self,
+        inode: &Inode,
+        offset: u64,
+        buf: &mut [u8],
     ) -> Result<usize, FsError> {
         if !inode.has_inline_data() {
             return Err(FsError::UnsupportedFeature);
@@ -26,7 +29,10 @@ impl MikuFS {
     }
 
     pub fn ext4_write_inline(
-        &mut self, inode_num: u32, data: &[u8], offset: u64,
+        &mut self,
+        inode_num: u32,
+        data: &[u8],
+        offset: u64,
     ) -> Result<usize, FsError> {
         if data.len() + offset as usize > 60 {
             return self.ext4_convert_inline_to_extents(inode_num, data, offset);
@@ -52,7 +58,10 @@ impl MikuFS {
     }
 
     fn ext4_convert_inline_to_extents(
-        &mut self, inode_num: u32, new_data: &[u8], offset: u64,
+        &mut self,
+        inode_num: u32,
+        new_data: &[u8],
+        offset: u64,
     ) -> Result<usize, FsError> {
         let mut inode = self.read_inode(inode_num)?;
         let old_size = inode.size_lo() as usize;

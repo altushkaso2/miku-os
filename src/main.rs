@@ -1,26 +1,32 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
-#![allow(dead_code, unused_imports, unused_variables, static_mut_refs, mismatched_lifetime_syntaxes)]
+#![allow(
+    dead_code,
+    unused_imports,
+    unused_variables,
+    static_mut_refs,
+    mismatched_lifetime_syntaxes
+)]
 
 extern crate alloc;
 
-use core::panic::PanicInfo;
 use bootloader_api::{entry_point, BootloaderConfig};
+use core::panic::PanicInfo;
 
-mod console;
-mod color;
-mod interrupts;
-mod gdt;
-mod shell;
-mod commands;
-mod vfs;
-mod ata;
-mod font;
-mod miku_extfs;
 mod allocator;
+mod ata;
+mod color;
+mod commands;
+mod console;
+mod font;
+mod gdt;
+mod interrupts;
+mod miku_extfs;
 mod power;
 pub mod serial;
+mod shell;
+mod vfs;
 
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();

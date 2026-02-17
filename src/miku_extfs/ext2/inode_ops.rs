@@ -1,16 +1,13 @@
-use crate::miku_extfs::{MikuFS, FsError};
 use crate::miku_extfs::structs::*;
+use crate::miku_extfs::{FsError, MikuFS};
 
 impl MikuFS {
     pub fn read_inode(&mut self, inode_num: u32) -> Result<Inode, FsError> {
-        self.reader.read_inode(inode_num, &self.superblock, &self.groups)
+        self.reader
+            .read_inode(inode_num, &self.superblock, &self.groups)
     }
 
-    pub fn get_file_block(
-        &mut self,
-        inode: &Inode,
-        logical_block: u32,
-    ) -> Result<u32, FsError> {
+    pub fn get_file_block(&mut self, inode: &Inode, logical_block: u32) -> Result<u32, FsError> {
         if inode.uses_extents() {
             return self.get_file_block_extent(inode, logical_block);
         }
@@ -59,9 +56,13 @@ impl MikuFS {
             let idx2 = rem / ptrs_per_block;
             let idx3 = rem % ptrs_per_block;
             let l1 = self.read_indirect_entry(tindirect_block, idx1)?;
-            if l1 == 0 { return Ok(0); }
+            if l1 == 0 {
+                return Ok(0);
+            }
             let l2 = self.read_indirect_entry(l1, idx2)?;
-            if l2 == 0 { return Ok(0); }
+            if l2 == 0 {
+                return Ok(0);
+            }
             return self.read_indirect_entry(l2, idx3);
         }
 
@@ -148,18 +149,13 @@ impl MikuFS {
         let mut sector = [0u8; 512];
         self.reader.read_sector(lba, &mut sector)?;
 
-        sector[offset_in_sector..offset_in_sector + 4]
-            .copy_from_slice(&value.to_le_bytes());
+        sector[offset_in_sector..offset_in_sector + 4].copy_from_slice(&value.to_le_bytes());
 
         self.reader.write_sector(lba, &sector)?;
         Ok(())
     }
 
-    pub fn read_indirect_entry(
-        &mut self,
-        block_num: u32,
-        index: u32,
-    ) -> Result<u32, FsError> {
+    pub fn read_indirect_entry(&mut self, block_num: u32, index: u32) -> Result<u32, FsError> {
         let ptrs_per_block = self.block_size / 4;
         if index >= ptrs_per_block {
             return Err(FsError::InvalidBlock);
@@ -225,11 +221,7 @@ impl MikuFS {
             if phys_block == 0 {
                 buf[done..done + chunk].fill(0);
             } else {
-                self.read_block_range(
-                    phys_block,
-                    block_offset,
-                    &mut buf[done..done + chunk],
-                )?;
+                self.read_block_range(phys_block, block_offset, &mut buf[done..done + chunk])?;
             }
 
             done += chunk;

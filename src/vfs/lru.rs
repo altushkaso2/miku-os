@@ -35,29 +35,29 @@ impl<const N: usize> LruList<N> {
     }
 
     pub fn push_front(&mut self, idx: u16) {
-    let i = idx as usize;
-    if i >= N {
-        return;
-    }
+        let i = idx as usize;
+        if i >= N {
+            return;
+        }
 
-    if self.nodes[i].in_lru {
-        self.remove(idx);
-    }
+        if self.nodes[i].in_lru {
+            self.remove(idx);
+        }
 
-    self.nodes[i].prev = INVALID_ID;
-    self.nodes[i].next = self.head;
-    self.nodes[i].in_lru = true;
+        self.nodes[i].prev = INVALID_ID;
+        self.nodes[i].next = self.head;
+        self.nodes[i].in_lru = true;
 
-    if self.head != INVALID_ID {
-        self.nodes[self.head as usize].prev = idx;
-    }
-    self.head = idx;
-    if self.tail == INVALID_ID {
-        self.tail = idx;
-    }
+        if self.head != INVALID_ID {
+            self.nodes[self.head as usize].prev = idx;
+        }
+        self.head = idx;
+        if self.tail == INVALID_ID {
+            self.tail = idx;
+        }
 
-    self.count = self.count.saturating_add(1);
-}
+        self.count = self.count.saturating_add(1);
+    }
 
     pub fn remove(&mut self, idx: u16) {
         let i = idx as usize;
@@ -104,18 +104,33 @@ impl<const N: usize> LruList<N> {
     }
 
     pub fn peek_lru(&self) -> Option<u16> {
-        if self.tail == INVALID_ID { None } else { Some(self.tail) }
+        if self.tail == INVALID_ID {
+            None
+        } else {
+            Some(self.tail)
+        }
     }
 
     pub fn peek_mru(&self) -> Option<u16> {
-        if self.head == INVALID_ID { None } else { Some(self.head) }
+        if self.head == INVALID_ID {
+            None
+        } else {
+            Some(self.head)
+        }
     }
 
-    pub fn is_empty(&self) -> bool { self.count == 0 }
-    pub fn len(&self) -> usize { self.count as usize }
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+    pub fn len(&self) -> usize {
+        self.count as usize
+    }
 
     pub fn iter(&self) -> LruIter<N> {
-        LruIter { list: self, current: self.head }
+        LruIter {
+            list: self,
+            current: self.head,
+        }
     }
 
     #[cfg(debug_assertions)]

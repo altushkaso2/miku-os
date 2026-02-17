@@ -165,4 +165,6 @@ fn write_u64(buf: &mut [u8; 192], pos: usize, val: u64) -> usize {
     l
 }
 
-pub const PROC_ENTRIES: &[&str] = &["version", "uptime", "meminfo", "mounts", "cpuinfo", "stat", "heap"];
+pub const PROC_ENTRIES: &[&str] = &[
+    "version", "uptime", "meminfo", "mounts", "cpuinfo", "stat", "heap",
+];
