@@ -67,36 +67,45 @@ fn next_random() -> u8 {
     state as u8
 }
 
-pub fn dev_read(dev_type: DevType, buf: &mut [u8], offset: u64) -> VfsResult<usize> {
+pub fn dev_read(dev_type: DevType, buf: &mut [u8], _offset: u64) -> VfsResult<usize> {
     match dev_type {
-        DevType::Null => Ok(0),
+        DevType::Null => {
+            Ok(0)
+        }
         DevType::Zero => {
-            let limit = buf.len().min(64);
-            for i in 0..limit {
-                buf[i] = 0;
+            let len = buf.len();
+            for b in buf.iter_mut() {
+                *b = 0;
             }
-            Ok(limit)
+            Ok(len)
         }
         DevType::Random => {
-            let limit = buf.len().min(64);
-            for i in 0..limit {
-                buf[i] = next_random();
+            let len = buf.len();
+            for b in buf.iter_mut() {
+                *b = next_random();
             }
-            Ok(limit)
+            Ok(len)
         }
-        DevType::Console => Ok(0),
+        DevType::Console => {
+            Ok(0)
+        }
     }
 }
 
 pub fn dev_write(dev_type: DevType, buf: &[u8], _offset: u64) -> VfsResult<usize> {
     match dev_type {
-        DevType::Null | DevType::Zero | DevType::Random => Ok(buf.len()),
+        DevType::Null | DevType::Zero | DevType::Random => {
+            Ok(buf.len())
+        }
         DevType::Console => {
             for &b in buf {
                 if b >= 0x20 && b <= 0x7E {
                     crate::print!("{}", b as char);
                 } else if b == b'\n' {
                     crate::println!();
+                } else if b == b'\r' {
+                } else if b == b'\t' {
+                    crate::print!("    ");
                 }
             }
             Ok(buf.len())
@@ -115,9 +124,9 @@ pub fn dev_type_from_node(major: u8, minor: u8) -> Option<DevType> {
 }
 
 pub const DEV_ENTRIES: &[(&str, DevType)] = &[
-    ("null", DevType::Null),
-    ("zero", DevType::Zero),
-    ("random", DevType::Random),
+    ("null",    DevType::Null),
+    ("zero",    DevType::Zero),
+    ("random",  DevType::Random),
     ("urandom", DevType::Random),
     ("console", DevType::Console),
 ];

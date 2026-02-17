@@ -1,93 +1,150 @@
 use crate::miku_extfs::{MikuFS, FsError};
 use crate::miku_extfs::structs::*;
 
-pub struct TreeEntry {
-    pub name: [u8; 60],
-    pub name_len: u8,
-    pub depth: u8,
-    pub is_last: bool,
-    pub is_dir: bool,
-    pub is_symlink: bool,
-    pub size: u64,
-}
-
-impl TreeEntry {
-    pub const fn empty() -> Self {
-        Self {
-            name: [0; 60],
-            name_len: 0,
-            depth: 0,
-            is_last: false,
-            is_dir: false,
-            is_symlink: false,
-            size: 0,
-        }
-    }
-
-    pub fn name_str(&self) -> &str {
-        core::str::from_utf8(&self.name[..self.name_len as usize]).unwrap_or("?")
-    }
-}
-
-pub struct TreeResult {
-    pub entries: [TreeEntry; 128],
-    pub count: usize,
-    pub max: usize,
-}
-
-impl TreeResult {
-    pub const fn new() -> Self {
-        Self {
-            entries: [const { TreeEntry::empty() }; 128],
-            count: 0,
-            max: 128,
-        }
-    }
-}
-
-pub struct FsckResult {
-    pub checked: bool,
-    pub errors: u32,
-    pub total_inodes: u32,
-    pub total_blocks: u32,
-    pub free_inodes: u32,
-    pub free_blocks: u32,
-    pub used_inodes: u32,
-    pub block_size: u32,
-    pub inode_size: u32,
-    pub bad_magic: bool,
-    pub root_ok: bool,
-    pub root_not_dir: bool,
-    pub bad_groups: u32,
-    pub orphan_inodes: u32,
-    pub group_free_blocks: [u16; 32],
-    pub group_free_inodes: [u16; 32],
-}
-
-impl FsckResult {
-    pub const fn new() -> Self {
-        Self {
-            checked: false,
-            errors: 0,
-            total_inodes: 0,
-            total_blocks: 0,
-            free_inodes: 0,
-            free_blocks: 0,
-            used_inodes: 0,
-            block_size: 0,
-            inode_size: 0,
-            bad_magic: false,
-            root_ok: false,
-            root_not_dir: false,
-            bad_groups: 0,
-            orphan_inodes: 0,
-            group_free_blocks: [0; 32],
-            group_free_inodes: [0; 32],
-        }
-    }
-}
-
 impl MikuFS {
+    pub fn ensure_block(
+        &mut self,
+        inode: &mut Inode,
+        inode_num: u32,
+        logical_block: u32,
+    ) -> Result<u32, FsError> {
+        let group = ((inode_num - 1) / self.inodes_per_group) as usize;
+        let ptrs_per_block = self.block_size / 4;
+
+        if logical_block < 12 {
+            let existing = inode.block(logical_block as usize);
+            if existing != 0 {
+                return Ok(existing);
+            }
+            let new_block = self.alloc_block(group)?;
+            self.zero_block(new_block)?;
+            inode.set_block(logical_block as usize, new_block);
+            let blks = inode.blocks() + (self.block_size / 512);
+            inode.set_blocks(blks);
+            return Ok(new_block);
+        }
+
+        let adjusted = logical_block - 12;
+
+        if adjusted < ptrs_per_block {
+            let mut indirect_block = inode.block(12);
+            if indirect_block == 0 {
+                indirect_block = self.alloc_block(group)?;
+                self.zero_block(indirect_block)?;
+                inode.set_block(12, indirect_block);
+                let blks = inode.blocks() + (self.block_size / 512);
+                inode.set_blocks(blks);
+            }
+            return self.ensure_indirect_entry(indirect_block, adjusted, group, inode);
+        }
+
+        let adjusted2 = adjusted - ptrs_per_block;
+
+        if adjusted2 < ptrs_per_block * ptrs_per_block {
+            let mut dind_block = inode.block(13);
+            if dind_block == 0 {
+                dind_block = self.alloc_block(group)?;
+                self.zero_block(dind_block)?;
+                inode.set_block(13, dind_block);
+                let blks = inode.blocks() + (self.block_size / 512);
+                inode.set_blocks(blks);
+            }
+            let idx1 = adjusted2 / ptrs_per_block;
+            let idx2 = adjusted2 % ptrs_per_block;
+            let mut l1 = self.read_indirect_entry(dind_block, idx1)?;
+            if l1 == 0 {
+                l1 = self.alloc_block(group)?;
+                self.zero_block(l1)?;
+                self.write_indirect_entry(dind_block, idx1, l1)?;
+                let blks = inode.blocks() + (self.block_size / 512);
+                inode.set_blocks(blks);
+            }
+            return self.ensure_indirect_entry(l1, idx2, group, inode);
+        }
+
+        let adjusted3 = adjusted2 - ptrs_per_block * ptrs_per_block;
+
+        if adjusted3 < ptrs_per_block * ptrs_per_block * ptrs_per_block {
+            let mut tind_block = inode.block(14);
+            if tind_block == 0 {
+                tind_block = self.alloc_block(group)?;
+                self.zero_block(tind_block)?;
+                inode.set_block(14, tind_block);
+                let blks = inode.blocks() + (self.block_size / 512);
+                inode.set_blocks(blks);
+            }
+            let idx1 = adjusted3 / (ptrs_per_block * ptrs_per_block);
+            let rem = adjusted3 % (ptrs_per_block * ptrs_per_block);
+            let idx2 = rem / ptrs_per_block;
+            let idx3 = rem % ptrs_per_block;
+
+            let mut l1 = self.read_indirect_entry(tind_block, idx1)?;
+            if l1 == 0 {
+                l1 = self.alloc_block(group)?;
+                self.zero_block(l1)?;
+                self.write_indirect_entry(tind_block, idx1, l1)?;
+                let blks = inode.blocks() + (self.block_size / 512);
+                inode.set_blocks(blks);
+            }
+
+            let mut l2 = self.read_indirect_entry(l1, idx2)?;
+            if l2 == 0 {
+                l2 = self.alloc_block(group)?;
+                self.zero_block(l2)?;
+                self.write_indirect_entry(l1, idx2, l2)?;
+                let blks = inode.blocks() + (self.block_size / 512);
+                inode.set_blocks(blks);
+            }
+
+            return self.ensure_indirect_entry(l2, idx3, group, inode);
+        }
+
+        Err(FsError::FileTooLarge)
+    }
+
+    fn ensure_indirect_entry(
+        &mut self,
+        indirect_block: u32,
+        index: u32,
+        group: usize,
+        inode: &mut Inode,
+    ) -> Result<u32, FsError> {
+        let existing = self.read_indirect_entry(indirect_block, index)?;
+        if existing != 0 {
+            return Ok(existing);
+        }
+
+        let new_block = self.alloc_block(group)?;
+        self.zero_block(new_block)?;
+        self.write_indirect_entry(indirect_block, index, new_block)?;
+
+        let blks = inode.blocks() + (self.block_size / 512);
+        inode.set_blocks(blks);
+
+        Ok(new_block)
+    }
+
+    pub fn write_indirect_entry(
+        &mut self,
+        block_num: u32,
+        index: u32,
+        value: u32,
+    ) -> Result<(), FsError> {
+        let byte_offset = index as usize * 4;
+        let sector_in_block = byte_offset / 512;
+        let offset_in_sector = byte_offset % 512;
+        let lba = self.block_to_lba(block_num) + sector_in_block as u32;
+
+        let mut sector = [0u8; 512];
+        self.reader.read_sector(lba, &mut sector)?;
+
+        sector[offset_in_sector..offset_in_sector + 4]
+            .copy_from_slice(&value.to_le_bytes());
+
+        self.reader.write_sector(lba, &sector)?;
+        Ok(())
+    }
+
     pub fn ext2_write_file(
         &mut self,
         inode_num: u32,
@@ -811,7 +868,7 @@ impl MikuFS {
         Ok(None)
     }
 
-    pub fn is_ext2_dir_empty(&mut self, dir_ino: u32) -> Result<bool, FsError> {
+    fn is_ext2_dir_empty(&mut self, dir_ino: u32) -> Result<bool, FsError> {
         let inode = self.read_inode(dir_ino)?;
         let mut entries = [const { DirEntry::empty() }; 64];
         let count = self.read_dir(&inode, &mut entries)?;
@@ -1014,5 +1071,91 @@ impl MikuFS {
         }
 
         Err(FsError::NotFound)
+    }
+}
+
+pub struct TreeEntry {
+    pub name: [u8; 60],
+    pub name_len: u8,
+    pub depth: u8,
+    pub is_last: bool,
+    pub is_dir: bool,
+    pub is_symlink: bool,
+    pub size: u64,
+}
+
+impl TreeEntry {
+    pub const fn empty() -> Self {
+        Self {
+            name: [0; 60],
+            name_len: 0,
+            depth: 0,
+            is_last: false,
+            is_dir: false,
+            is_symlink: false,
+            size: 0,
+        }
+    }
+
+    pub fn name_str(&self) -> &str {
+        core::str::from_utf8(&self.name[..self.name_len as usize]).unwrap_or("?")
+    }
+}
+
+pub struct TreeResult {
+    pub entries: [TreeEntry; 128],
+    pub count: usize,
+    pub max: usize,
+}
+
+impl TreeResult {
+    pub const fn new() -> Self {
+        Self {
+            entries: [const { TreeEntry::empty() }; 128],
+            count: 0,
+            max: 128,
+        }
+    }
+}
+
+pub struct FsckResult {
+    pub checked: bool,
+    pub errors: u32,
+    pub total_inodes: u32,
+    pub total_blocks: u32,
+    pub free_inodes: u32,
+    pub free_blocks: u32,
+    pub used_inodes: u32,
+    pub block_size: u32,
+    pub inode_size: u32,
+    pub bad_magic: bool,
+    pub root_ok: bool,
+    pub root_not_dir: bool,
+    pub bad_groups: u32,
+    pub orphan_inodes: u32,
+    pub group_free_blocks: [u16; 32],
+    pub group_free_inodes: [u16; 32],
+}
+
+impl FsckResult {
+    pub const fn new() -> Self {
+        Self {
+            checked: false,
+            errors: 0,
+            total_inodes: 0,
+            total_blocks: 0,
+            free_inodes: 0,
+            free_blocks: 0,
+            used_inodes: 0,
+            block_size: 0,
+            inode_size: 0,
+            bad_magic: false,
+            root_ok: false,
+            root_not_dir: false,
+            bad_groups: 0,
+            orphan_inodes: 0,
+            group_free_blocks: [0; 32],
+            group_free_inodes: [0; 32],
+        }
     }
 }

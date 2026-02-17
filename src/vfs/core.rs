@@ -78,16 +78,20 @@ pub fn with_vfs<F, R>(f: F) -> R
 where
     F: FnOnce(&mut MikuVFS) -> R,
 {
-    let _guard = VFS_LOCK.lock();
-    f(get_vfs())
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let _guard = VFS_LOCK.lock();
+        f(get_vfs())
+    })
 }
 
 pub fn with_vfs_ro<F, R>(f: F) -> R
 where
     F: FnOnce(&MikuVFS) -> R,
 {
-    let _guard = VFS_LOCK.lock();
-    f(get_vfs())
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let _guard = VFS_LOCK.lock();
+        f(get_vfs())
+    })
 }
 
 pub struct MikuVFS {
@@ -253,9 +257,7 @@ impl MikuVFS {
 
         crate::serial_println!("[vfs] procfs: {} entries mounted at /proc", count);
     }
-}
 
-impl MikuVFS {
     #[inline]
     fn now(&self) -> Timestamp {
         procfs::uptime_ticks()
@@ -328,15 +330,17 @@ impl MikuVFS {
         target_buf[..target_len]
             .copy_from_slice(&self.nodes[link_id].symlink_target.data[..target_len]);
 
-        let parent = self.nodes[link_id].parent as usize;
-        let start = if target_len > 0 && target_buf[0] == b'/' {
-            0
-        } else {
-            parent
+        let target_str = match core::str::from_utf8(&target_buf[..target_len]) {
+            Ok(s) => s,
+            Err(_) => return Err(VfsError::InvalidPath),
         };
 
-        let target_str =
-            unsafe { core::str::from_utf8_unchecked(&target_buf[..target_len]) };
+        if target_str.is_empty() {
+            return Err(VfsError::InvalidPath);
+        }
+
+        let parent = self.nodes[link_id].parent as usize;
+        let start = if target_str.starts_with('/') { 0 } else { parent };
 
         let mut current = start;
         for component in target_str.split('/') {
@@ -459,16 +463,10 @@ impl MikuVFS {
             self.nodes[id].symlink_target.len = symlink_len;
         }
 
-        self.nodes[parent_vnode]
-            .children
-            .insert(name, id as InodeId);
-
-        crate::serial_println!(
-            "[vfs] ext2 lazy load: '{}' ino={} -> vnode={}",
-            name,
-            child_ino,
-            id
-        );
+        if !self.nodes[parent_vnode].children.insert(name, id as InodeId) {
+            self.nodes[id].active = false;
+            return Err(VfsError::NoSpace);
+        }
 
         Ok(id)
     }
@@ -533,10 +531,9 @@ impl MikuVFS {
 
         for i in 0..child_count {
             let ci = &child_infos[i];
-            let name_str = unsafe {
-                core::str::from_utf8_unchecked(
-                    &ci.name[..ci.name_len as usize],
-                )
+            let name_str = match core::str::from_utf8(&ci.name[..ci.name_len as usize]) {
+                Ok(s) => s,
+                Err(_) => continue,
             };
 
             let h = name_hash(name_str);
@@ -574,9 +571,9 @@ impl MikuVFS {
                 self.nodes[id].ext2_ino = ci.ino;
                 self.nodes[id].children_loaded = false;
 
-                self.nodes[dir_vnode]
-                    .children
-                    .insert(name_str, id as InodeId);
+                if !self.nodes[dir_vnode].children.insert(name_str, id as InodeId) {
+                    self.nodes[id].active = false;
+                }
             }
         }
 
@@ -608,7 +605,21 @@ impl MikuVFS {
     }
 
     pub fn effective_node(&self, id: usize) -> usize {
-        PathWalker::effective_node(&self.nodes, id)
+        if self.nodes[id].mount_id != INVALID_U8 {
+            let mid = self.nodes[id].mount_id;
+            for i in 0..MAX_VNODES {
+                if i != id
+                    && self.nodes[i].active
+                    && self.nodes[i].is_dir()
+                    && self.nodes[i].fs_type != FsType::TmpFS
+                    && self.nodes[i].mount_id == mid
+                    && self.nodes[i].ext2_ino != 0
+                {
+                    return i;
+                }
+            }
+        }
+        id
     }
 
     pub fn xm(&self, id: usize) -> usize {
@@ -811,9 +822,7 @@ impl MikuVFS {
 
         self.nodes[dir_id].children_loaded = false;
     }
-}
 
-impl MikuVFS {
     pub fn mkdir(&mut self, parent: usize, name: &str, mode: FileMode) -> VfsResult<usize> {
         Self::validate_name(name)?;
         let pid = self.effective_node(parent);
@@ -926,9 +935,7 @@ impl MikuVFS {
 
         Ok(count)
     }
-}
 
-impl MikuVFS {
     pub fn create_file(&mut self, parent: usize, name: &str, mode: FileMode) -> VfsResult<usize> {
         Self::validate_name(name)?;
         let pid = self.effective_node(parent);
@@ -1069,9 +1076,7 @@ impl MikuVFS {
         );
         Ok(())
     }
-}
 
-impl MikuVFS {
     pub fn open(
         &mut self,
         cwd: usize,
@@ -1151,9 +1156,7 @@ impl MikuVFS {
 
         Ok(new_fd)
     }
-}
 
-impl MikuVFS {
     pub fn read(&mut self, fd: usize, buf: &mut [u8]) -> VfsResult<usize> {
         let file = self.fd_table.get(fd)?;
         if !file.flags.readable() {
@@ -1274,8 +1277,10 @@ impl MikuVFS {
         let name_bytes = self.nodes[vid].get_name().as_bytes();
         let name_len = name_bytes.len().min(NAME_LEN);
         name_copy[..name_len].copy_from_slice(&name_bytes[..name_len]);
-        let name_str =
-            unsafe { core::str::from_utf8_unchecked(&name_copy[..name_len]) };
+        let name_str = match core::str::from_utf8(&name_copy[..name_len]) {
+            Ok(s) => s,
+            Err(_) => return Err(VfsError::NotFound),
+        };
 
         let vnode_used = self.total_vnodes();
         let mut proc_buf = [0u8; 192];
@@ -1335,6 +1340,10 @@ impl MikuVFS {
             offset = self.nodes[vid].size as usize;
         }
 
+        if self.nodes[vid].is_ext2_backed() {
+            return self.write_ext2_file(fd, vid, offset as u64, data);
+        }
+
         let end_offset = offset + data.len();
         if end_offset as u64 > AddressSpace::max_size() {
             return Err(VfsError::FileTooLarge);
@@ -1379,6 +1388,35 @@ impl MikuVFS {
         Ok(done)
     }
 
+    fn write_ext2_file(
+        &mut self,
+        fd: usize,
+        vid: usize,
+        offset: u64,
+        data: &[u8],
+    ) -> VfsResult<usize> {
+        let ext2_ino = self.nodes[vid].ext2_ino;
+
+        let result = crate::commands::ext2_cmds::with_ext2_pub(|fs| {
+            fs.ext3_write_file(ext2_ino, data, offset)
+                .map_err(|_| VfsError::IoError)
+        });
+
+        let n = match result {
+            Some(Ok(n)) => n,
+            Some(Err(e)) => return Err(e),
+            None => return Err(VfsError::IoError),
+        };
+
+        let new_end = offset + n as u64;
+        if new_end > self.nodes[vid].size {
+            self.nodes[vid].size = new_end;
+        }
+
+        self.fd_table.get_mut(fd)?.offset = new_end;
+        Ok(n)
+    }
+
     pub fn seek(&mut self, fd: usize, whence: SeekFrom) -> VfsResult<u64> {
         let file = self.fd_table.get(fd)?;
         let vid = file.vnode_id as usize;
@@ -1415,9 +1453,7 @@ impl MikuVFS {
         self.nodes[vid].flags.dirty = false;
         Ok(())
     }
-}
 
-impl MikuVFS {
     pub fn unlink(&mut self, cwd: usize, path: &str) -> VfsResult<()> {
         let id = self.resolve_path(cwd, path)?;
 
@@ -1477,21 +1513,34 @@ impl MikuVFS {
 
         let new_h = name_hash(new_name);
         let eff = self.effective_node(pid);
+
         for cid in self.nodes[eff].children.find_by_hash(new_h) {
             let c = cid as usize;
-            if c < MAX_VNODES && self.nodes[c].active && self.nodes[c].name_eq(new_name) && c != id
-            {
+            if c < MAX_VNODES && self.nodes[c].active && self.nodes[c].name_eq(new_name) && c != id {
                 return Err(VfsError::AlreadyExists);
             }
         }
 
+        let mut old_name_buf = [0u8; NAME_LEN];
+        let old_name_len = self.nodes[id].name.len as usize;
+        old_name_buf[..old_name_len].copy_from_slice(&self.nodes[id].name.data[..old_name_len]);
+
         let old_h = name_hash(self.nodes[id].get_name());
+
         self.nodes[pid].children.remove(old_h, id as InodeId);
         self.nodes[id].name = NameBuf::from_str(new_name);
 
         if !self.nodes[pid].children.insert(new_name, id as InodeId) {
-            self.nodes[id].name = NameBuf::from_str(old);
-            let _ = self.nodes[pid].children.insert(old, id as InodeId);
+            let rollback_name = match core::str::from_utf8(&old_name_buf[..old_name_len]) {
+                Ok(s) => s,
+                Err(_) => {
+                    self.nodes[id].active = false;
+                    return Err(VfsError::NoSpace);
+                }
+            };
+
+            self.nodes[id].name = NameBuf::from_str(rollback_name);
+            let _ = self.nodes[pid].children.insert(rollback_name, id as InodeId);
             return Err(VfsError::NoSpace);
         }
 
@@ -1499,12 +1548,9 @@ impl MikuVFS {
         self.nodes[id].touch_ctime(ts);
         self.nodes[pid].touch_mtime(ts);
 
-        crate::serial_println!("[vfs] rename '{}' -> '{}'", old, new_name);
         Ok(())
     }
-}
 
-impl MikuVFS {
     pub fn stat(&mut self, cwd: usize, path: &str) -> VfsResult<VNodeStat> {
         let id = self.resolve_path_follow(cwd, path)?;
         Ok(self.nodes[id].stat())
@@ -1609,9 +1655,7 @@ impl MikuVFS {
         self.nodes[id].touch_ctime(self.now());
         Ok(())
     }
-}
 
-impl MikuVFS {
     pub fn statfs(&self, cwd: usize, path: &str) -> VfsResult<StatFs> {
         let id = PathWalker::resolve(&self.nodes, cwd, path)?;
         let fs = self.nodes[id].fs_type;
@@ -1630,9 +1674,7 @@ impl MikuVFS {
             flags: if self.is_readonly_fs(id) { 1 } else { 0 },
         })
     }
-}
 
-impl MikuVFS {
     pub fn total_vnodes(&self) -> usize {
         self.nodes.iter().filter(|v| v.active).count()
     }

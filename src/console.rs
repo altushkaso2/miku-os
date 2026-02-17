@@ -135,6 +135,8 @@ pub const COLOR_CYAN: [u8; 3] = [0, 220, 220];
 
 pub const BORDER_PADDING: usize = 10;
 pub const CHAR_WIDTH: usize = 9;
+const LINE_SPACING: usize = 2;
+const CHAR_HEIGHT: usize = 16;
 
 pub struct Console {
     framebuffer: &'static mut [u8],
@@ -142,20 +144,23 @@ pub struct Console {
     pub x_pos: usize,
     pub y_pos: usize,
     pub fg_color: [u8; 3],
+    pub is_bgr: bool,
 }
-
-const LINE_SPACING: usize = 2;
-const CHAR_HEIGHT: usize = 16;
 
 impl Console {
     pub fn new(framebuffer: &'static mut [u8], info: FrameBufferInfo) -> Self {
         framebuffer.fill(0);
+        let is_bgr = match info.pixel_format {
+            bootloader_api::info::PixelFormat::Bgr => true,
+            _ => false,
+        };
         Self {
             framebuffer,
             info,
             x_pos: BORDER_PADDING,
             y_pos: BORDER_PADDING,
             fg_color: COLOR_MIKU,
+            is_bgr,
         }
     }
 
@@ -243,6 +248,15 @@ impl Console {
     }
 
     fn write_rendered_char(&mut self, rendered_char: noto_sans_mono_bitmap::RasterizedChar) {
+        let rw = rendered_char.width();
+        if self.x_pos + rw >= self.info.width {
+            self.new_line();
+        }
+        for x in 0..rw.max(CHAR_WIDTH) {
+            for y in 0..CHAR_HEIGHT {
+                self.write_pixel(self.x_pos + x, self.y_pos + y, 0, 0, 0);
+            }
+        }
         for (y, row) in rendered_char.raster().iter().enumerate() {
             for (x, byte) in row.iter().enumerate() {
                 if *byte > 0 {
@@ -263,9 +277,15 @@ impl Console {
         }
         let byte_offset = (self.info.stride * y + x) * self.info.bytes_per_pixel;
         let buffer = &mut self.framebuffer[byte_offset..];
-        buffer[0] = b;
-        buffer[1] = g;
-        buffer[2] = r;
+        if self.is_bgr {
+            buffer[0] = b;
+            buffer[1] = g;
+            buffer[2] = r;
+        } else {
+            buffer[0] = r;
+            buffer[1] = g;
+            buffer[2] = b;
+        }
     }
 }
 

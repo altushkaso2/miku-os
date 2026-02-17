@@ -3,15 +3,18 @@ use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;
 
+#[repr(align(16))]
+struct DoubleFaultStack([u8; 8192]);
+
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 
-static mut DOUBLE_FAULT_STACK: [u8; 8192] = [0; 8192];
+static mut DOUBLE_FAULT_STACK: DoubleFaultStack = DoubleFaultStack([0; 8192]);
 
 lazy_static! {
     static ref TSS: TaskStateSegment = {
         let mut tss = TaskStateSegment::new();
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
-            let stack_start = VirtAddr::from_ptr(unsafe { &DOUBLE_FAULT_STACK });
+            let stack_start = VirtAddr::from_ptr(unsafe { &DOUBLE_FAULT_STACK.0 });
             stack_start + 8192u64
         };
         tss

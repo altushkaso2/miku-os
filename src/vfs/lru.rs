@@ -35,27 +35,29 @@ impl<const N: usize> LruList<N> {
     }
 
     pub fn push_front(&mut self, idx: u16) {
-        let i = idx as usize;
-        if i >= N {
-            return;
-        }
-        if self.nodes[i].in_lru {
-            self.remove(idx);
-        }
-
-        self.nodes[i].prev = INVALID_ID;
-        self.nodes[i].next = self.head;
-        self.nodes[i].in_lru = true;
-
-        if self.head != INVALID_ID {
-            self.nodes[self.head as usize].prev = idx;
-        }
-        self.head = idx;
-        if self.tail == INVALID_ID {
-            self.tail = idx;
-        }
-        self.count += 1;
+    let i = idx as usize;
+    if i >= N {
+        return;
     }
+
+    if self.nodes[i].in_lru {
+        self.remove(idx);
+    }
+
+    self.nodes[i].prev = INVALID_ID;
+    self.nodes[i].next = self.head;
+    self.nodes[i].in_lru = true;
+
+    if self.head != INVALID_ID {
+        self.nodes[self.head as usize].prev = idx;
+    }
+    self.head = idx;
+    if self.tail == INVALID_ID {
+        self.tail = idx;
+    }
+
+    self.count = self.count.saturating_add(1);
+}
 
     pub fn remove(&mut self, idx: u16) {
         let i = idx as usize;
@@ -81,17 +83,13 @@ impl<const N: usize> LruList<N> {
         self.nodes[i].in_lru = false;
         self.nodes[i].prev = INVALID_ID;
         self.nodes[i].next = INVALID_ID;
-        if self.count > 0 {
-            self.count -= 1;
-        }
+
+        self.count = self.count.saturating_sub(1);
     }
 
     pub fn touch(&mut self, idx: u16) {
         if (idx as usize) >= N {
             return;
-        }
-        if self.nodes[idx as usize].in_lru {
-            self.remove(idx);
         }
         self.push_front(idx);
     }
@@ -106,33 +104,33 @@ impl<const N: usize> LruList<N> {
     }
 
     pub fn peek_lru(&self) -> Option<u16> {
-        if self.tail == INVALID_ID {
-            None
-        } else {
-            Some(self.tail)
-        }
+        if self.tail == INVALID_ID { None } else { Some(self.tail) }
     }
 
     pub fn peek_mru(&self) -> Option<u16> {
-        if self.head == INVALID_ID {
-            None
-        } else {
-            Some(self.head)
-        }
+        if self.head == INVALID_ID { None } else { Some(self.head) }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.count == 0
-    }
-    pub fn len(&self) -> usize {
-        self.count as usize
-    }
+    pub fn is_empty(&self) -> bool { self.count == 0 }
+    pub fn len(&self) -> usize { self.count as usize }
 
     pub fn iter(&self) -> LruIter<N> {
-        LruIter {
-            list: self,
-            current: self.head,
+        LruIter { list: self, current: self.head }
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn assert_consistent(&self) {
+        let mut counted = 0u16;
+        let mut cur = self.head;
+        while cur != INVALID_ID {
+            let i = cur as usize;
+            assert!(i < N, "lru: node index out of bounds");
+            assert!(self.nodes[i].in_lru, "lru: node not marked in_lru");
+            counted += 1;
+            assert!(counted <= N as u16, "lru: cycle detected");
+            cur = self.nodes[i].next;
         }
+        assert_eq!(counted, self.count, "lru: count mismatch");
     }
 }
 

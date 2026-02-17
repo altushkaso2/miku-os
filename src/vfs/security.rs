@@ -79,13 +79,24 @@ impl SecurityManager {
 
     pub fn check_access(
         &self,
-        _vnode_id: InodeId,
-        _cred: &Credentials,
+        vnode_id: InodeId,
+        cred: &Credentials,
         _access: crate::vfs::permissions::AccessMode,
     ) -> bool {
         if !self.enforcing {
             return true;
         }
-        true
+        if cred.is_root() {
+            return true;
+        }
+        match self.get_label(vnode_id) {
+            Some(label) => {
+                if label == b"restricted" {
+                    return false;
+                }
+                true
+            }
+            None => true,
+        }
     }
 }

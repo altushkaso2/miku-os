@@ -13,11 +13,11 @@ impl Superblock {
         Self { data: [0; 1024] }
     }
 
-    fn read_u16(&self, offset: usize) -> u16 {
+    pub fn read_u16(&self, offset: usize) -> u16 {
         u16::from_le_bytes([self.data[offset], self.data[offset + 1]])
     }
 
-    fn read_u32(&self, offset: usize) -> u32 {
+    pub fn read_u32(&self, offset: usize) -> u32 {
         u32::from_le_bytes([
             self.data[offset],
             self.data[offset + 1],
@@ -318,6 +318,10 @@ impl Superblock {
             "ext2"
         }
     }
+
+    pub fn has_gdt_csum(&self) -> bool {
+        self.feature_ro_compat() & FEATURE_RO_COMPAT_GDT_CSUM != 0
+    }
 }
 
 pub const FEATURE_COMPAT_DIR_PREALLOC: u32 = 0x0001;
@@ -369,11 +373,11 @@ impl GroupDesc {
         Self { data: [0; 64] }
     }
 
-    fn read_u16(&self, offset: usize) -> u16 {
+    pub fn read_u16(&self, offset: usize) -> u16 {
         u16::from_le_bytes([self.data[offset], self.data[offset + 1]])
     }
 
-    fn read_u32(&self, offset: usize) -> u32 {
+    pub fn read_u32(&self, offset: usize) -> u32 {
         u32::from_le_bytes([
             self.data[offset],
             self.data[offset + 1],
@@ -510,17 +514,25 @@ impl GroupDesc {
     }
 
     pub fn inc_used_dirs(&mut self) {
-        let current = self.used_dirs();
-        self.write_u16(16, current + 1);
+        let lo = self.used_dirs_lo();
+        let hi = self.used_dirs_hi();
+        let val = (lo as u32) | ((hi as u32) << 16);
+        let new_val = val + 1;
+        self.write_u16(16, new_val as u16);
+        self.write_u16(48, (new_val >> 16) as u16);
     }
 
     pub fn dec_used_dirs(&mut self) {
-        let current = self.used_dirs();
-        if current > 0 {
-            self.write_u16(16, current - 1);
+        let lo = self.used_dirs_lo();
+        let hi = self.used_dirs_hi();
+        let val = (lo as u32) | ((hi as u32) << 16);
+        if val > 0 {
+            let new_val = val - 1;
+            self.write_u16(16, new_val as u16);
+            self.write_u16(48, (new_val >> 16) as u16);
         }
     }
-}
+} 
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -741,7 +753,7 @@ impl Inode {
 
     pub fn set_size_full(&mut self, size: u64) {
         self.set_size(size as u32);
-        if self.on_disk_size > 108 {
+        if self.on_disk_size >= 112 {
             self.write_u32(108, (size >> 32) as u32);
         }
     }
@@ -922,6 +934,86 @@ impl Inode {
         self.write_u16(46, 0);
         self.write_u32(48, 0);
         self.set_flags(self.flags() | EXT4_EXTENTS_FL);
+    }
+
+    pub fn set_extent_entries(&mut self, count: u16) {
+        self.write_u16(42, count);
+    }
+
+    pub fn set_extent_depth(&mut self, depth: u16) {
+        self.write_u16(46, depth);
+    }
+
+    pub fn set_extent_generation(&mut self, gen: u32) {
+        self.write_u32(48, gen);
+    }
+
+    pub fn set_extent_at_raw(
+        &mut self, idx: usize, block: u32, len: u16, start_hi: u16, start_lo: u32,
+    ) {
+        let base = 52 + idx * 12;
+        if base + 12 > 100 { return; }
+        self.write_u32(base, block);
+        self.write_u16(base + 4, len);
+        self.write_u16(base + 6, start_hi);
+        self.write_u32(base + 8, start_lo);
+    }
+
+    pub fn set_extent_idx_at_raw(
+        &mut self, idx: usize, block: u32, leaf_lo: u32, leaf_hi: u16,
+    ) {
+        let base = 52 + idx * 12;
+        if base + 12 > 100 { return; }
+        self.write_u32(base, block);
+        self.write_u32(base + 4, leaf_lo);
+        self.write_u16(base + 8, leaf_hi);
+        self.write_u16(base + 10, 0);
+    }
+
+    pub fn set_extent_len_at(&mut self, idx: usize, len: u16) {
+        let base = 52 + idx * 12;
+        if base + 6 > 100 { return; }
+        self.write_u16(base + 4, len);
+    }
+
+    pub fn clear_block_pointers(&mut self) {
+        for i in 0..15 {
+            self.set_block(i, 0);
+        }
+    }
+
+    pub fn write_inline_data(&mut self, data: &[u8]) {
+        let len = data.len().min(60);
+        self.data[40..40 + len].copy_from_slice(&data[..len]);
+    }
+
+    pub fn read_inline_data(&self, size: usize) -> &[u8] {
+        let len = size.min(60);
+        &self.data[40..40 + len]
+    }
+
+    pub fn init_file_ext4(&mut self, mode: u16, uid: u16, gid: u16, now: u32) {
+        self.data = [0; 256];
+        self.set_mode(S_IFREG | mode);
+        self.set_uid(uid);
+        self.set_gid(gid);
+        self.set_atime(now);
+        self.set_ctime(now);
+        self.set_mtime(now);
+        self.set_links_count(1);
+        self.init_extent_header(4);
+    }
+
+    pub fn init_dir_ext4(&mut self, mode: u16, uid: u16, gid: u16, now: u32) {
+        self.data = [0; 256];
+        self.set_mode(S_IFDIR | mode);
+        self.set_uid(uid);
+        self.set_gid(gid);
+        self.set_atime(now);
+        self.set_ctime(now);
+        self.set_mtime(now);
+        self.set_links_count(2);
+        self.init_extent_header(4);
     }
 }
 

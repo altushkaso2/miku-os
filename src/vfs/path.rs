@@ -1,6 +1,3 @@
-// ==========================================
-// FILE: src/vfs/path.rs
-// ==========================================
 use crate::vfs::hash::name_hash;
 use crate::vfs::types::*;
 
@@ -8,48 +5,53 @@ pub struct PathWalker;
 
 impl PathWalker {
     pub fn resolve(
-        nodes: &[crate::vfs::vnode::VNode; MAX_VNODES],
-        cwd: usize,
-        path: &str,
-    ) -> VfsResult<usize> {
-        let path = path.trim();
-        if path.is_empty() {
-            return Ok(cwd);
-        }
-
-        let mut current = if path.starts_with('/') { 0 } else { cwd };
-        let mut depth = 0u8;
-
-        for component in path.split('/') {
-            if component.is_empty() || component == "." {
-                continue;
-            }
-            if component == ".." {
-                let p = nodes[current].parent;
-                if p != INVALID_ID {
-                    current = p as usize;
-                }
-                continue;
-            }
-
-            depth += 1;
-            if depth as usize > MAX_PATH_DEPTH {
-                return Err(VfsError::InvalidPath);
-            }
-
-            if !nodes[current].is_dir() {
-                return Err(VfsError::NotDirectory);
-            }
-
-            let eff = Self::effective_node(nodes, current);
-            current = Self::lookup_child(nodes, eff, component)?;
-
-            if nodes[current].is_symlink() {
-                current = Self::follow_symlink(nodes, current, 0)?;
-            }
-        }
-        Ok(current)
+    nodes: &[crate::vfs::vnode::VNode; MAX_VNODES],
+    cwd: usize,
+    path: &str,
+) -> VfsResult<usize> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Ok(cwd);
     }
+
+    let mut current = if path.starts_with('/') { 0 } else { cwd };
+    let mut depth = 0u8;
+
+    for component in path.split('/') {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if component == ".." {
+            let p = nodes[current].parent;
+            if p != INVALID_ID {
+                current = p as usize;
+            }
+            continue;
+        }
+
+        depth += 1;
+        if depth as usize > MAX_PATH_DEPTH {
+            return Err(VfsError::InvalidPath);
+        }
+
+        if !nodes[current].is_dir() {
+            return Err(VfsError::NotDirectory);
+        }
+
+        let eff = Self::effective_node(nodes, current);
+        match Self::lookup_child(nodes, eff, component) {
+            Ok(id) => {
+                current = id;
+                if nodes[current].is_symlink() {
+                    current = Self::follow_symlink(nodes, current, 0)?;
+                }
+            }
+            Err(VfsError::NotFound) => return Err(VfsError::NotFound),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(current)
+}
 
     fn follow_symlink(
         nodes: &[crate::vfs::vnode::VNode; MAX_VNODES],
@@ -111,20 +113,21 @@ impl PathWalker {
     }
 
     pub fn effective_node(nodes: &[crate::vfs::vnode::VNode; MAX_VNODES], id: usize) -> usize {
-        if nodes[id].mount_id != INVALID_U8 {
-            for i in 0..MAX_VNODES {
-                if nodes[i].active
-                    && nodes[i].is_dir()
-                    && nodes[i].parent == INVALID_ID
-                    && i != 0
-                    && nodes[id].mount_id == nodes[i].mount_id
-                {
-                    return i;
-                }
+    if nodes[id].mount_id != INVALID_U8 {
+        let mid = nodes[id].mount_id;
+        for i in 0..MAX_VNODES {
+            if i != id
+                && nodes[i].active
+                && nodes[i].is_dir()
+                && nodes[i].mount_id == mid
+                && nodes[i].ext2_ino != 0
+            {
+                return i;
             }
         }
-        id
     }
+    id
+}
 
     pub fn split_last(path: &str) -> (&str, &str) {
         let trimmed = path.trim_end_matches('/');
