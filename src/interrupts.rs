@@ -48,6 +48,21 @@ pub fn init_idt() {
     crate::serial_println!("[int] idt loaded");
 }
 
+pub fn init_pics() {
+    unsafe {
+        let mut pics = PICS.lock();
+        pics.initialize();
+
+        pics.write_masks(0b1111_1000, 0b1111_1111);
+    }
+
+    let masks = unsafe { PICS.lock().read_masks() };
+    crate::serial_println!(
+        "[int] PIC masks: PIC1=0b{:08b} PIC2=0b{:08b}",
+        masks[0], masks[1]
+    );
+}
+
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     crate::vfs::procfs::tick();
     unsafe {
@@ -62,6 +77,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
+
 
     lazy_static! {
         static ref KEYBOARD: Mutex<Keyboard<layouts::Us104Key, ScancodeSet1>> =

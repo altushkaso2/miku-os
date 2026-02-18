@@ -20,7 +20,7 @@ pub fn cmd_info() {
     let heap_free = allocator::free();
     let heap_total = allocator::HEAP_SIZE;
 
-    cprintln!(57, 197, 187, "  MikuOS v0.0.1");
+    cprintln!(57, 197, 187, "  MikuOS v0.0.7");
     cprintln!(230, 240, 240, "  VNodes: {}/{}", vn, crate::vfs::MAX_VNODES);
     cprintln!(230, 240, 240, "  Mounts: {}", mn);
     cprintln!(
@@ -49,7 +49,7 @@ pub fn cmd_heap() {
     println!("  Usage:  {}%", pct);
 
     if pct > 80 {
-        cprintln!(220, 220, 100, "  WARNING: heap usage high");
+        cprintln!(220, 220, 100, "  warning: heap usage high");
     }
 }
 

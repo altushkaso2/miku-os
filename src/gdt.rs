@@ -45,15 +45,21 @@ struct Selectors {
 }
 
 pub fn init() {
-    use x86_64::instructions::segmentation::{Segment, CS, DS};
+    use x86_64::instructions::segmentation::{Segment, CS, DS, ES, SS};
     use x86_64::instructions::tables::load_tss;
 
     GDT.0.load();
     unsafe {
         CS::set_reg(GDT.1.code_selector);
         DS::set_reg(GDT.1.data_selector);
+        SS::set_reg(GDT.1.data_selector); 
+        ES::set_reg(GDT.1.data_selector); 
         load_tss(GDT.1.tss_selector);
     }
 
-    crate::serial_println!("[gdt] gdt+tss loaded, ist configured");
+    crate::serial_println!(
+        "[gdt] gdt+tss loaded, cs={:#x} ds=ss=es={:#x}",
+        GDT.1.code_selector.0,
+        GDT.1.data_selector.0
+    );
 }

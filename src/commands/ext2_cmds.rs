@@ -660,28 +660,28 @@ pub fn cmd_ext2_fsck() {
             println!("  Free inodes:  {}", r.free_inodes);
             println!("  Used inodes:  {}", r.used_inodes);
             if r.bad_magic {
-                print_error!("  ERROR: bad superblock magic");
+                print_error!("  error: bad superblock magic");
             }
             if !r.root_ok {
-                print_error!("  ERROR: cannot read root inode");
+                print_error!("  error: cannot read root inode");
             }
             if r.root_not_dir {
-                print_error!("  ERROR: root inode is not a directory");
+                print_error!("  error: root inode is not a directory");
             }
             if r.bad_groups > 0 {
-                print_error!("  ERROR: {} bad group descriptors", r.bad_groups);
+                print_error!("  error: {} bad group descriptors", r.bad_groups);
             }
             if r.orphan_inodes > 0 {
                 cprintln!(
                     220,
                     220,
                     100,
-                    "  WARNING: {} orphan inodes",
+                    "  warning: {} orphan inodes",
                     r.orphan_inodes
                 );
             }
             if r.errors == 0 {
-                print_success!("  filesystem OK");
+                print_success!("  filesystem ok");
             } else {
                 print_error!("  {} errors found", r.errors);
             }
@@ -799,7 +799,7 @@ pub fn cmd_ext3_journal() {
                         255,
                         50,
                         50,
-                        "  {:>6}  {:>8}  {:>6}  INCOMPLETE",
+                        "  {:>6}  {:>8}  {:>6}  incomplete",
                         tx.sequence,
                         tx.start_block,
                         tx.data_blocks
@@ -936,7 +936,7 @@ pub fn cmd_ext4_info() {
             if sb_ok {
                 print_success!("  SB csum:  valid");
             } else {
-                print_error!("  SB csum:  INVALID");
+                print_error!("  SB csum:  invalid");
             }
         }
     });
@@ -948,7 +948,7 @@ pub fn cmd_ext4_info() {
 pub fn cmd_ext4_enable_extents() {
     let result = with_ext2(|fs| -> Result<(), FsError> { fs.enable_extents_feature() });
     match result {
-        Some(Ok(())) => print_success!("  extents feature enabled"),
+        Some(Ok(())) => print_success!("  extents enabled"),
         Some(Err(e)) => print_error!("  ext4extents: {:?}", e),
         None => print_error!("  ext2 not mounted"),
     }
@@ -958,7 +958,7 @@ pub fn cmd_ext4_checksums() {
     let result = with_ext2(|fs| {
         cprintln!(57, 197, 187, "  Checksum Verification");
         let sb_ok = fs.verify_superblock_csum();
-        println!("  Superblock: {}", if sb_ok { "OK" } else { "FAIL" });
+        println!("  Superblock: {}", if sb_ok { "ok" } else { "fail" });
         let gc = fs.group_count as usize;
         let mut gd_ok = 0u32;
         let mut gd_fail = 0u32;
@@ -969,7 +969,7 @@ pub fn cmd_ext4_checksums() {
                 gd_fail += 1;
             }
         }
-        println!("  Group descs: {} OK, {} FAIL", gd_ok, gd_fail);
+        println!("  Group descs: {} ok, {} fail", gd_ok, gd_fail);
         let mut ino_ok = 0u32;
         let mut ino_fail = 0u32;
         let max_check = fs.superblock.inodes_count().min(64);
@@ -985,7 +985,7 @@ pub fn cmd_ext4_checksums() {
             }
         }
         println!(
-            "  Inodes (first {}): {} OK, {} FAIL",
+            "  Inodes (first {}): {} ok, {} fail",
             max_check, ino_ok, ino_fail
         );
     });
