@@ -4,24 +4,29 @@ license = "MIT"
 version = "0.1.0"
 edition = "2021"
 authors = ["altushkaso2"]
-description = "Experimental Unix-like kernel in Rust. Implementing core subsystems including VFS, memory management, file systems, and hardware drivers entirely from scratch."
+description = "Experimental Unix-like kernel in Rust"
 repository = "https://github.com/altushkaso2/miku-os"
 
 [dependencies]
-bootloader_api = "0.11" 
 volatile = "0.2.6"
 spin = "0.9.8"
 x86_64 = "0.14.2"
-noto-sans-mono-bitmap = "0.2" 
-log = "0.4"                 
+noto-sans-mono-bitmap = "0.2"
+log = "0.4"
 lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 pc-keyboard = "0.7.0"
 pic8259 = "0.10.1"
 linked_list_allocator = "0.10.5"
-
-[package.metadata.bootloader]
-target = "x86_64-unknown-none"
+limine = "0.5.0"
 
 [build-dependencies]
 fontdue = "0.9"
 
+[profile.dev]
+panic = "abort"
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
