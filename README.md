@@ -2,7 +2,7 @@
 
 # 💙 Miku OS
 
-**Экспериментальное ядро операционной системы на Rust**
+**Экспериментальная операционная система на Rust**
 
 *Powered by Rust, and a couple of developers :D*
 
