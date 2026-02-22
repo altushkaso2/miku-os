@@ -10,6 +10,7 @@ impl ProcFs {
 }
 
 static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
+static WALL_CLOCK: AtomicU64 = AtomicU64::new(0);
 
 pub fn tick() {
     TICK_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -19,11 +20,19 @@ pub fn uptime_ticks() -> u64 {
     TICK_COUNT.load(Ordering::Relaxed)
 }
 
+pub fn set_wall_clock(unix_secs: u64) {
+    WALL_CLOCK.store(unix_secs, Ordering::Relaxed);
+}
+
+pub fn wall_clock() -> u64 {
+    WALL_CLOCK.load(Ordering::Relaxed)
+}
+
 pub fn proc_read(name: &str, buf: &mut [u8], vnode_used: usize) -> VfsResult<usize> {
     let mut tmp = [0u8; 192];
     let len = match name {
         "version" => {
-            let s = b"MikuOS v0.0.1 (x86_64)\nbuilt with love <3\n";
+            let s = b"MikuOS v0.0.8 (x86_64)\nbuilt with love <3\n";
             let l = s.len().min(192);
             tmp[..l].copy_from_slice(&s[..l]);
             l

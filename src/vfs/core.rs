@@ -1,12 +1,10 @@
 use crate::vfs::address_space::AddressSpace;
-use crate::vfs::children::Children;
 use crate::vfs::devfs;
 use crate::vfs::fd::FdTable;
 use crate::vfs::hash::name_hash;
 use crate::vfs::mount::MountTable;
 use crate::vfs::pages::PageCache;
 use crate::vfs::path::PathWalker;
-use crate::vfs::permissions;
 use crate::vfs::procfs;
 use crate::vfs::types::*;
 use crate::vfs::vnode::VNode;

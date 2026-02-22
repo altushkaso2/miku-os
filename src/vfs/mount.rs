@@ -109,7 +109,7 @@ impl MountTable {
             .unwrap_or(false)
     }
 
-    pub fn iter(&self) -> MountIter {
+    pub fn iter(&self) -> MountIter<'_> {
         MountIter {
             table: self,
             pos: 0,

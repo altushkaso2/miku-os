@@ -4,11 +4,12 @@ use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;
 
 #[repr(align(16))]
-struct DoubleFaultStack([u8; 8192]);
+struct Stack8K([u8; 8192]);
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 
-static mut DOUBLE_FAULT_STACK: DoubleFaultStack = DoubleFaultStack([0; 8192]);
+static mut DOUBLE_FAULT_STACK: Stack8K = Stack8K([0; 8192]);
+static mut KERNEL_SYSCALL_STACK: Stack8K = Stack8K([0; 8192]);
 
 lazy_static! {
     static ref TSS: TaskStateSegment = {
@@ -17,32 +18,38 @@ lazy_static! {
             let stack_start = VirtAddr::from_ptr(unsafe { &DOUBLE_FAULT_STACK.0 });
             stack_start + 8192u64
         };
+        tss.privilege_stack_table[0] = {
+            let stack_start = VirtAddr::from_ptr(unsafe { &KERNEL_SYSCALL_STACK.0 });
+            stack_start + 8192u64
+        };
         tss
     };
+}
+
+pub struct Selectors {
+    pub kernel_code: SegmentSelector,
+    pub kernel_data: SegmentSelector,
+    pub user_code:   SegmentSelector,
+    pub user_data:   SegmentSelector,
+    pub tss:         SegmentSelector,
 }
 
 lazy_static! {
     static ref GDT: (GlobalDescriptorTable, Selectors) = {
         let mut gdt = GlobalDescriptorTable::new();
-        let code_selector = gdt.add_entry(Descriptor::kernel_code_segment());
-        let data_selector = gdt.add_entry(Descriptor::kernel_data_segment());
-        let tss_selector = gdt.add_entry(Descriptor::tss_segment(&TSS));
-        (
-            gdt,
-            Selectors {
-                code_selector,
-                data_selector,
-                tss_selector,
-            },
-        )
+        let kernel_code = gdt.add_entry(Descriptor::kernel_code_segment());
+        let kernel_data = gdt.add_entry(Descriptor::kernel_data_segment());
+        let user_data   = gdt.add_entry(Descriptor::user_data_segment());
+        let user_code   = gdt.add_entry(Descriptor::user_code_segment());
+        let tss         = gdt.add_entry(Descriptor::tss_segment(&TSS));
+        (gdt, Selectors { kernel_code, kernel_data, user_code, user_data, tss })
     };
 }
 
-struct Selectors {
-    code_selector: SegmentSelector,
-    data_selector: SegmentSelector,
-    tss_selector: SegmentSelector,
-}
+pub fn kernel_code_selector() -> SegmentSelector { GDT.1.kernel_code }
+pub fn kernel_data_selector() -> SegmentSelector { GDT.1.kernel_data }
+pub fn user_code_selector()   -> SegmentSelector { GDT.1.user_code }
+pub fn user_data_selector()   -> SegmentSelector { GDT.1.user_data }
 
 pub fn init() {
     use x86_64::instructions::segmentation::{Segment, CS, DS, ES, SS};
@@ -50,16 +57,17 @@ pub fn init() {
 
     GDT.0.load();
     unsafe {
-        CS::set_reg(GDT.1.code_selector);
-        DS::set_reg(GDT.1.data_selector);
-        SS::set_reg(GDT.1.data_selector); 
-        ES::set_reg(GDT.1.data_selector); 
-        load_tss(GDT.1.tss_selector);
+        CS::set_reg(GDT.1.kernel_code);
+        DS::set_reg(GDT.1.kernel_data);
+        SS::set_reg(GDT.1.kernel_data);
+        ES::set_reg(GDT.1.kernel_data);
+        load_tss(GDT.1.tss);
     }
 
     crate::serial_println!(
-        "[gdt] gdt+tss loaded, cs={:#x} ds=ss=es={:#x}",
-        GDT.1.code_selector.0,
-        GDT.1.data_selector.0
+        "[gdt] loaded: kernel_cs={:#x} user_cs={:#x} user_ds={:#x}",
+        GDT.1.kernel_code.0,
+        GDT.1.user_code.0,
+        GDT.1.user_data.0,
     );
 }

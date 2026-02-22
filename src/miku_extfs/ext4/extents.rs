@@ -214,7 +214,7 @@ impl MikuFS {
         inode_num: u32,
         logical_block: u32,
         phys_block: u32,
-        depth: u16,
+        _depth: u16,
     ) -> Result<(), FsError> {
         let header = inode.extent_header();
         let mut target_idx = 0usize;
@@ -341,7 +341,7 @@ impl MikuFS {
         old_data: &[u8],
         logical_block: u32,
         phys_block: u32,
-        parent_idx: usize,
+        _parent_idx: usize,
     ) -> Result<(), FsError> {
         let group = ((inode_num - 1) / self.inodes_per_group) as usize;
         let new_block = self.alloc_block(group)?;

@@ -71,7 +71,7 @@ impl NotifyManager {
         self.total_events += 1;
     }
 
-    pub fn recent(&self, count: usize) -> RecentIter {
+    pub fn recent(&self, count: usize) -> RecentIter<'_> {
         let start = if self.write_pos > count {
             self.write_pos - count
         } else {

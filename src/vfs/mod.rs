@@ -29,6 +29,5 @@ pub mod version;
 pub mod vnode;
 pub mod xattr;
 
-pub use core::{with_vfs, with_vfs_ro, MikuVFS};
-pub use syscall::SyscallInterface;
+pub use core::{with_vfs, with_vfs_ro};
 pub use types::*;

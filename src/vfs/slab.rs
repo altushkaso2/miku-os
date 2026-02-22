@@ -79,7 +79,7 @@ impl<const N: usize> Slab<N> {
         Self::MAX_ITEMS
     }
 
-    pub fn iter_active(&self) -> SlabIter<N> {
+    pub fn iter_active(&self) -> SlabIter<'_, N> {
         SlabIter { slab: self, pos: 0 }
     }
 }

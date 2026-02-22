@@ -1,5 +1,5 @@
 use crate::commands;
-use crate::{console, cprint, cprintln, print, println, serial_println};
+use crate::{console, cprint, cprintln, print, serial_println};
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 use lazy_static::lazy_static;
 use pc_keyboard::DecodedKey;
@@ -72,7 +72,7 @@ lazy_static! {
 
 pub fn init() {
     serial_println!("[shell] init");
-    cprintln!(57, 197, 187, "MikuOS v0.0.7");
+    cprintln!(57, 197, 187, "MikuOS v0.0.8");
     prompt();
 }
 
@@ -190,6 +190,10 @@ pub fn handle_keypress(key: DecodedKey) {
                     redraw_input(&sh);
                     draw_cursor_inner(&sh);
                 }
+            }
+            '\x03' => {
+                crate::net::CTRL_C.store(true, core::sync::atomic::Ordering::SeqCst);
+                crate::println!("^C");
             }
             _ => {
                 if sh.len < MAX_CMD {

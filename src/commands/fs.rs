@@ -3,7 +3,7 @@ use crate::shell::SESSION;
 use crate::vfs::{
     self, with_vfs, with_vfs_ro, FileMode, OpenFlags, VNodeKind, VfsError, MAX_CHILDREN, MAX_VNODES,
 };
-use crate::{cprint, cprintln, print, print_error, print_success, println, serial_println};
+use crate::{cprintln, print, print_error, print_success, println, serial_println};
 
 pub fn cmd_ls(path: &str) {
     serial_println!("[ls] path={}", path);

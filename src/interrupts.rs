@@ -1,3 +1,4 @@
+use core::sync::atomic::{AtomicU64, Ordering};
 use lazy_static::lazy_static;
 use pic8259::ChainedPics;
 use spin::Mutex;
@@ -8,6 +9,8 @@ pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
 pub static PICS: Mutex<ChainedPics> =
     Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
+
+static TICK: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -52,7 +55,6 @@ pub fn init_pics() {
     unsafe {
         let mut pics = PICS.lock();
         pics.initialize();
-
         pics.write_masks(0b1111_1000, 0b1111_1111);
     }
 
@@ -65,33 +67,43 @@ pub fn init_pics() {
 
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     crate::vfs::procfs::tick();
+    let t = TICK.fetch_add(1, Ordering::Relaxed);
+
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
     }
+
+    if t % 20 == 0 {
+        crate::scheduler::schedule();
+    }
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    use pc_keyboard::{layouts, HandleControl, Keyboard, ScancodeSet1};
+    use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
     use x86_64::instructions::port::Port;
 
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
-
 
     lazy_static! {
         static ref KEYBOARD: Mutex<Keyboard<layouts::Us104Key, ScancodeSet1>> =
             Mutex::new(Keyboard::new(
                 ScancodeSet1::new(),
                 layouts::Us104Key,
-                HandleControl::Ignore
+                HandleControl::MapLettersToUnicode,
             ));
     }
 
     let mut keyboard = KEYBOARD.lock();
     if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
         if let Some(key) = keyboard.process_keyevent(key_event) {
-            crate::shell::handle_keypress(key);
+            match key {
+                DecodedKey::Unicode('\u{0003}') => {
+                    crate::net::CTRL_C.store(true, core::sync::atomic::Ordering::SeqCst);
+                }
+                other => crate::shell::handle_keypress(other),
+            }
         }
     }
 

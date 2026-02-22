@@ -22,7 +22,7 @@
 **Miku OS** - UNIX-подобная операционная система, разрабатываемая с нуля в режиме `no_std`.  
 Без стандартной библиотеки (`libc`) - полный контроль над железом и архитектурой памяти.
 
-> Весь код написан на Rust. Ассемблер используется исключительно для загрузчика и обработки прерываний (IDT/GDT).
+> Весь код написан на Rust. Ассемблер используется исключительно для загрузчика, syscall-обработчика и переключения контекста.
 
 ---
 
@@ -32,12 +32,75 @@
 
 | Компонент | Описание |
 |:--|:--|
-| **Архитектура** | x86_64 bare-metal, `#![no_std]`, `#![no_main]` |
-| **Bootloader** | Bootloader API, фреймбуфер 1280×720 (BGR) |
-| **Защита** | GDT + TSS + IST для double fault |
+| **Архитектура** | x86_64, `#![no_std]`, `#![no_main]` |
+| **Bootloader** | Limine protocol, фреймбуфер 1280×800 (BGR) |
+| **Защита** | GDT + TSS + IST для double fault, ring 0 / ring 3 |
 | **Прерывания** | IDT - timer, keyboard, page fault, GPF, double fault |
 | **PIC** | PIC8259 (offset 32/40) |
 | **Куча** | 256 KB, linked-list allocator |
+| **Syscall** | SYSCALL/SYSRET через MSR, обработчик на naked asm |
+
+---
+
+### Планировщик
+
+| Параметр | Значение |
+|:--|:--|
+| **Тип** | Round-robin, preemptive |
+| **Процессы** | До 16 одновременно |
+| **Переключение** | Каждые 20 тиков таймера (~200мс) |
+| **Контекст** | r15, r14, r13, r12, rbx, rbp, rip, rsp, rflags |
+| **Стек** | 16 KB на процесс |
+| **Состояния** | `Ready`, `Running`, `Dead` |
+
+Переключение контекста реализовано на naked asm - полное сохранение и восстановление регистров без участия компилятора.
+
+---
+
+### Сетевой стек
+
+Полный сетевой стек реализован с нуля, без каких-либо сторонних библиотек.
+
+<details>
+<summary><b>Драйверы сетевых карт</b></summary>
+
+| Драйвер | Чипы |
+|:--|:--|
+| **Intel E1000** | 82540EM, 82545EM, 82574L, 82579LM, I217 |
+| **Realtek RTL8139** | RTL8139 |
+| **Realtek RTL8168** | RTL8168, RTL8169 |
+| **VirtIO Net** | QEMU/KVM виртуальная сетевая карта |
+
+Все драйверы обнаруживаются автоматически через PCI-сканер.
+
+</details>
+
+<details>
+<summary><b>Протоколы</b></summary>
+
+| Уровень | Протоколы |
+|:--|:--|
+| **L2** | Ethernet, ARP (таблица с кэшем) |
+| **L3** | IPv4, ICMP |
+| **L4** | UDP, TCP (с состоянием соединения) |
+| **Прикладной** | DHCP, DNS, NTP, HTTP, Traceroute |
+| **Безопасность** | TLS 1.2 (RSA + AES-128-CBC + SHA) |
+
+</details>
+
+<details>
+<summary><b>TLS 1.2 - полная реализация с нуля</b></summary>
+
+- **RSA** - парсинг ASN.1/DER сертификатов, PKCS#1 шифрование
+- **BigNum** - собственная реализация арифметики больших чисел для RSA 2048-bit
+- **AES-128-CBC** - симметричное шифрование
+- **SHA-1, SHA-256, HMAC** - хеширование и аутентификация
+- **PRF** - деривация ключей по RFC 5246
+- **Handshake** - полный цикл: ClientHello → Certificate → ClientKeyExchange → Finished
+
+Проверено на реальном Google (TLS RSA 2048, порт 443).
+
+</details>
 
 ---
 
@@ -66,7 +129,7 @@
 - Security labels (MAC), квоты по байтам и inodes
 - File locking: shared/exclusive с deadlock detection
 
-#### Продвинутые фичи
+#### Продвинутые возможности OS
 - **Журнал VFS** - 16 записей операций
 - **Транзакции** - 4 одновременных с откатом
 - **Xattr** - 8 расширенных атрибутов на ноду
@@ -88,13 +151,11 @@
 | **procfs** | `/proc` | `version`, `uptime`, `meminfo`, `mounts`, `cpuinfo`, `stat` |
 | **ext2** | `/mnt` | Полное чтение и запись реального диска |
 | **ext3** | `/mnt` | Журналирование поверх ext2 (JBD2) |
-| **ext4** | `/mnt` | Extent-based файлы |
+| **ext4** | `/mnt` | Extent-based файлы + crc32c checksums |
 
 ---
 
-### MikuFS - Ext2/3/4 драйвер
-
-Собственный драйвер без сторонних зависимостей.
+### MikuFS — Ext2/3/4 драйвер
 
 <details>
 <summary><b>Развернуть</b></summary>
@@ -113,18 +174,11 @@
 - Создание журнала (`ext2 → ext3` конвертация)
 - Запись транзакций, commit, abort
 - Recovery - replay незавершённых транзакций
-- Clean - пометка журнала чистым
 
 #### Утилиты
-- `fsck` - проверка целостности (magic, root inode, groups, orphans)
+- `fsck` - проверка целостности
 - `tree` - визуализация дерева директорий
-- `du` - подсчёт размера поддерева
-- `cp`, `mv`, `chmod`, `chown`, hardlink
-
-#### Интеграция с VFS
-- **Lazy loading** - VNode создаётся при первом обращении
-- **Прозрачный доступ** - `ls /mnt`, `cat /mnt/file`, `cd /mnt`
-- **mount/umount** с корректным eviction
+- `du`, `cp`, `mv`, `chmod`, `chown`, hardlink
 
 </details>
 
@@ -137,7 +191,7 @@
 | **Ввод** | Посимвольная обработка, вставка в середину строки |
 | **Навигация** | `← → Home End Delete Backspace` |
 | **История** | 16 команд, навигация `↑ ↓` |
-| **Цвета** | Miku-тематика: бирюзовый, розовый, белый |
+| **Цвета** | miku-тематика: бирюзовый, розовый, белый |
 | **Шрифт** | Кастомный bitmap 9×16 + noto-sans-mono fallback |
 | **Консоль** | Framebuffer рендеринг, автоскролл, RGB per-character |
 
@@ -156,132 +210,7 @@
 
 ## Команды
 
-### Навигация и файлы
-
-| Команда | Описание | Пример |
-|:--|:--|:--|
-| `ls [path]` | Список файлов | `ls /dev` |
-| `cd <path>` | Перейти в директорию | `cd /mnt` |
-| `pwd` | Текущая директория | `pwd` |
-| `mkdir <name>` | Создать директорию | `mkdir mydir` |
-| `touch <name>` | Создать пустой файл | `touch file.txt` |
-| `cat <file>` | Показать содержимое | `cat hello.txt` |
-| `write <file> <text>` | Записать текст в файл | `write hello.txt Hello!` |
-| `stat <path>` | Информация о файле | `stat /proc/version` |
-| `rm <file>` | Удалить файл | `rm old.txt` |
-| `rm -rf <path>` | Рекурсивное удаление | `rm -rf mydir` |
-| `rmdir <dir>` | Удалить пустую директорию | `rmdir empty` |
-| `mv <old> <new>` | Переименовать / переместить | `mv a.txt b.txt` |
-
-### Ссылки и права
-
-| Команда | Описание | Пример |
-|:--|:--|:--|
-| `ln -s <target> <link>` | Создать симлинк | `ln -s /mnt/file link` |
-| `ln <existing> <new>` | Создать жёсткую ссылку | `ln file.txt hardlink` |
-| `readlink <path>` | Показать цель симлинка | `readlink link` |
-| `chmod <mode> <path>` | Изменить права доступа | `chmod 755 script` |
-
-### Монтирование
-
-| Команда | Описание | Пример |
-|:--|:--|:--|
-| `mount` | Список точек монтирования | `mount` |
-| `mount ext2 <path>` | Монтировать ext2 диск | `mount ext2 /mnt` |
-| `umount <path>` | Размонтировать | `umount /mnt` |
-| `df` | Использование дискового пространства | `df` |
-
-### Система
-
-| Команда | Описание | Пример |
-|:--|:--|:--|
-| `info` | Информация об OS и uptime | `info` |
-| `help` | Список всех команд | `help` |
-| `history` | История введённых команд | `history` |
-| `echo <text>` | Вывести текст | `echo Hello` |
-| `clear` | Очистить экран | `clear` |
-| `heap` | Статистика кучи (used/free) | `heap` |
-| `poweroff` / `shutdown` / `halt` | Выключить систему | `poweroff` |
-| `reboot` / `restart` | Перезагрузить систему | `reboot` |
-
----
-
-### Ext2 - работа с диском
-
-| Команда | Описание | Пример |
-|:--|:--|:--|
-| `ext2mount` | Найти и смонтировать ext2 диск | `ext2mount` |
-| `ext2info` | Информация о файловой системе | `ext2info` |
-| `ext2ls [path]` | Список файлов | `ext2ls /home` |
-| `ext2cat <path>` | Прочитать файл | `ext2cat /etc/hosts` |
-| `ext2stat <path>` | Информация об inode | `ext2stat /bin` |
-| `ext2write <path> <text>` | Записать в файл | `ext2write /tmp/log hello` |
-| `ext2append <path> <text>` | Дописать в файл | `ext2append /tmp/log world` |
-| `ext2mkdir <path>` | Создать директорию | `ext2mkdir /home/miku` |
-| `ext2rm <path>` | Удалить файл | `ext2rm /tmp/old` |
-| `ext2rm -rf <path>` | Рекурсивное удаление | `ext2rm -rf /tmp` |
-| `ext2rmdir <path>` | Удалить пустую директорию | `ext2rmdir /empty` |
-| `ext2mv <src> <dst>` | Переименовать / переместить | `ext2mv old.txt new.txt` |
-| `ext2cp <src> <dst>` | Копировать файл | `ext2cp /a.txt /b.txt` |
-| `ext2ln -s <tgt> <name>` | Создать симлинк | `ext2ln -s /bin sh` |
-| `ext2link <existing> <name>` | Создать жёсткую ссылку | `ext2link file.txt hard` |
-| `ext2chmod <mode> <path>` | Изменить права | `ext2chmod 644 /file` |
-| `ext2chown <uid> <gid> <path>` | Изменить владельца | `ext2chown 0 0 /file` |
-| `ext2du [path]` | Размер директории | `ext2du /home` |
-| `ext2tree [path]` | Дерево директорий | `ext2tree /` |
-| `ext2fsck` | Проверка целостности FS | `ext2fsck` |
-| `ext2cache` | Статистика блочного кэша | `ext2cache` |
-| `ext2cacheflush` | Сбросить блочный кэш | `ext2cacheflush` |
-
-### Ext3 - журналирование
-
-| Команда | Описание | Пример |
-|:--|:--|:--|
-| `ext3mkjournal` | Создать журнал (ext2 → ext3) | `ext3mkjournal` |
-| `ext3info` | Информация о журнале | `ext3info` |
-| `ext3journal` | Показать транзакции | `ext3journal` |
-| `ext3clean` | Пометить журнал чистым | `ext3clean` |
-| `ext3recover` | Восстановить из журнала | `ext3recover` |
-
-### Ext4 - расширенные возможности
-
-| Команда | Описание | Пример |
-|:--|:--|:--|
-| `ext4info` | Информация о ext4 (extents, journal, checksums) | `ext4info` |
-| `ext4extents` | Включить поддержку extent tree | `ext4extents` |
-| `ext4checksums` | Верификация crc32c checksums | `ext4checksums` |
-| `ext4extinfo <path>` | Extent tree конкретного файла | `ext4extinfo /mnt/file` |
-
----
-
-## Быстрый старт
-
-```bash
-# Посмотреть систему
-info
-cat /proc/version
-cat /proc/uptime
-cat /proc/meminfo
-ls /dev
-
-# Поработать с файлами
-mkdir test
-write test/hello.txt Привет мику!
-cat test/hello.txt
-ls test
-rm -rf test
-
-# Подключить ext2 диск
-ext2mount
-mount ext2 /mnt
-ls /mnt
-ext2tree /
-
-# Проверить журнал
-ext3info
-ext2fsck
-ext2cache
-```
+Полный список команд доступен в **[Wiki проекта](https://github.com/altushkaso2/miku-os/wiki)**.
 
 ---
 
@@ -311,7 +240,7 @@ Builder делает всё сам:
 [2/5] Создание файловой структуры
 [3/5] Генерация системного образа (system.img)
 [4/5] Подготовка ext2 диска (disk.img)
-[5/5] Запуск QEMU (по желанию (y/N) )
+[5/5] Запуск QEMU (по желанию (y/N))
 ```
 
 > Первая сборка займёт пару минут - скачиваются зависимости и компилируется ядро.  
@@ -330,7 +259,7 @@ Builder делает всё сам:
   <br>
   <sub>Создатель и единственный разработчик Miku OS</sub>
   <br>
-  <sub>Ядро · VFS · MikuFS · Shell</sub>
+  <sub>Ядро · VFS · MikuFS · Shell · Сеть · TLS · Планировщик</sub>
 </div>
 
 ---
@@ -339,10 +268,10 @@ Builder делает всё сам:
 
 > Всё началось с простой мысли - «а что если взять и написать свою операционную систему?».  
 > С тех пор это стало хобби. Каждый вечер - новая функция, новый баг, новое открытие.  
-> От первого символа на экране до полноценного ext2 драйвера - всё написано вручную,  
-> без готовых FS библиотек и обёрток. Только Rust, документация и упорство :D  
+> От первого символа на экране до полноценного TLS-стека и планировщика - всё написано вручную,  
+> без готовых библиотек и обёрток. Только Rust, документация и упорство :D  
 >
-> Проект живёт и развивается. Впереди - сети, многозадачность, пользовательское пространство.  
+> Проект живёт и развивается. Впереди - ELF загрузчик, userspace, пользовательские процессы.  
 > Но это уже следующая глава, которая ждёт Miku OS :)
 
 <div align="center">
@@ -353,6 +282,6 @@ Builder делает всё сам:
 
 <img src="docs/miku.png" width="70" alt="Miku">
 
-Если проект понравился — поставьте звезду! ⭐
+Если проект понравился - поставьте звезду! ⭐
 
 </div>

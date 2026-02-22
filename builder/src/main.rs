@@ -1,5 +1,5 @@
 use std::{
-    env, fs,
+    fs,
     io::{self, Write},
     path::{Path, PathBuf},
     process::Command,

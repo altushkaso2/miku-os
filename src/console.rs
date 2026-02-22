@@ -122,7 +122,6 @@ pub fn clear_char() {
     }
 }
 
-// ========== Цвета ==========
 pub const COLOR_MIKU: [u8; 3] = [57, 197, 187];
 pub const COLOR_MIKU_DARK: [u8; 3] = [0, 150, 136];
 pub const COLOR_MIKU_LIGHT: [u8; 3] = [128, 222, 217];

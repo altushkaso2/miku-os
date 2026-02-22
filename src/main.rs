@@ -1,13 +1,15 @@
-#![no_std]
-#![no_main]
-#![feature(abi_x86_interrupt)]
 #![allow(
     dead_code,
     unused_imports,
     unused_variables,
     static_mut_refs,
-    mismatched_lifetime_syntaxes
+    mismatched_lifetime_syntaxes,
+    unused_assignments,
+    unused_mut
 )]
+#![no_std]
+#![no_main]
+#![feature(abi_x86_interrupt)]
 
 extern crate alloc;
 
@@ -23,7 +25,11 @@ mod gdt;
 mod interrupts;
 mod limine;
 mod miku_extfs;
+mod net;
 mod power;
+mod process;
+mod scheduler;
+mod syscall;
 pub mod serial;
 mod shell;
 mod vfs;
@@ -38,19 +44,35 @@ fn kernel_main() -> ! {
 
     if !limine::BASE_REVISION.is_supported() {
         serial_println!("[kern] fatal: limine base revision not supported!");
-        loop { x86_64::instructions::hlt(); }
+        loop {
+            x86_64::instructions::hlt();
+        }
     }
     serial_println!("[kern] limine protocol ok");
 
     gdt::init();
-
+    syscall::init();
     interrupts::init_idt();
-
     interrupts::init_pics();
-
     allocator::init();
-
     init_framebuffer();
+
+    if let Some(hhdm) = limine::HHDM_REQUEST.get_response() {
+        net::set_hhdm_offset(hhdm.offset());
+        serial_println!("[kern] hhdm offset: {:#x}", hhdm.offset());
+    }
+
+    if let Some(kaddr) = limine::KERNEL_ADDR_REQUEST.get_response() {
+        net::set_kernel_address(kaddr.virtual_base(), kaddr.physical_base());
+        serial_println!(
+            "[kern] kernel virt={:#x} phys={:#x}",
+            kaddr.virtual_base(),
+            kaddr.physical_base()
+        );
+    }
+
+    net::init();
+    serial_println!("[kern] net init done");
 
     vfs::core::init_vfs();
     serial_println!("[kern] vfs ok");
@@ -61,7 +83,7 @@ fn kernel_main() -> ! {
     serial_println!("[kern] shell ready");
 
     x86_64::instructions::interrupts::enable();
-    serial_println!("[kern] interrupts enabled — keyboard active");
+    serial_println!("[kern] interrupts enabled, keyboard active");
 
     loop {
         x86_64::instructions::interrupts::disable();
@@ -109,13 +131,11 @@ fn init_framebuffer() {
 
     let fb_ptr = fb.addr();
     if fb_ptr.is_null() {
-        serial_println!("[kern] WARN: framebuffer address is null!");
+        serial_println!("[kern] warn: framebuffer address is null!");
         return;
     }
 
-    let buffer = unsafe {
-        core::slice::from_raw_parts_mut(fb_ptr, fb_size)
-    };
+    let buffer = unsafe { core::slice::from_raw_parts_mut(fb_ptr, fb_size) };
 
     let config = console::FrameBufferConfig {
         width,

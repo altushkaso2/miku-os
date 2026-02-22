@@ -126,7 +126,7 @@ impl<const N: usize> LruList<N> {
         self.count as usize
     }
 
-    pub fn iter(&self) -> LruIter<N> {
+    pub fn iter(&self) -> LruIter<'_, N> {
         LruIter {
             list: self,
             current: self.head,

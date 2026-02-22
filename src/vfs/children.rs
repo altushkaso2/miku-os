@@ -88,7 +88,7 @@ impl Children {
         false
     }
 
-    pub fn find_by_hash(&self, h: u32) -> ChildHashIter {
+    pub fn find_by_hash(&self, h: u32) -> ChildHashIter<'_> {
         ChildHashIter {
             children: self,
             hash: h,
@@ -174,7 +174,7 @@ impl Children {
         self.count as usize >= MAX_CHILDREN
     }
 
-    pub fn iter(&self) -> ChildIter {
+    pub fn iter(&self) -> ChildIter<'_> {
         ChildIter {
             children: self,
             pos: 0,

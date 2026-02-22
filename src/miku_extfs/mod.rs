@@ -6,7 +6,6 @@ pub mod ext4;
 pub mod reader;
 pub mod structs;
 
-use crate::ata::AtaDrive;
 use ext3::journal::TxnTag;
 use reader::DiskReader;
 use structs::*;

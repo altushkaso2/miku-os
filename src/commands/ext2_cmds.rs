@@ -1,11 +1,10 @@
 use crate::ata::AtaDrive;
-use crate::miku_extfs::ext2::write::{FsckResult, TreeResult};
+use crate::miku_extfs::ext2::write::TreeResult;
 use crate::miku_extfs::ext3::journal::{TxnTag, DEFAULT_JOURNAL_BLOCKS};
 use crate::miku_extfs::reader::DiskReader;
 use crate::miku_extfs::structs::*;
-use crate::miku_extfs::{FsError, FsInfo, MikuFS};
+use crate::miku_extfs::{FsError, MikuFS};
 use crate::{cprint, cprintln, print_error, print_success, println, serial_println};
-use alloc::sync::Arc;
 use spin::Mutex;
 
 static mut EXT2_STORAGE: MikuFS = MikuFS {
@@ -124,7 +123,7 @@ fn parse_u16(s: &str) -> Option<u16> {
 }
 
 pub fn cmd_ext2_mount(_args: &str) {
-    serial_println!("[ext2] scanning drives...");
+    serial_println!("[ext2] scanning drivers...");
     let drive_order: [usize; 4] = [2, 1, 3, 0];
     for &i in &drive_order {
         serial_println!("[ext2] trying drive {} ...", i);

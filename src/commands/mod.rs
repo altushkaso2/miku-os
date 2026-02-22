@@ -25,25 +25,13 @@ pub fn execute(input: &str) {
         "cd" => fs::cmd_cd(a1),
         "pwd" => fs::cmd_pwd(),
         "mkdir" => {
-            if a1.is_empty() {
-                println!("Usage: mkdir <name>");
-            } else {
-                fs::cmd_mkdir(a1);
-            }
+            if a1.is_empty() { println!("Usage: mkdir <n>"); } else { fs::cmd_mkdir(a1); }
         }
         "touch" => {
-            if a1.is_empty() {
-                println!("Usage: touch <name>");
-            } else {
-                fs::cmd_touch(a1);
-            }
+            if a1.is_empty() { println!("Usage: touch <n>"); } else { fs::cmd_touch(a1); }
         }
         "cat" => {
-            if a1.is_empty() {
-                println!("Usage: cat <file>");
-            } else {
-                fs::cmd_cat(a1);
-            }
+            if a1.is_empty() { println!("Usage: cat <file>"); } else { fs::cmd_cat(a1); }
         }
         "write" => {
             if a1.is_empty() || rest.len() <= a1.len() {
@@ -53,31 +41,19 @@ pub fn execute(input: &str) {
             }
         }
         "stat" => {
-            if a1.is_empty() {
-                println!("Usage: stat <path>");
-            } else {
-                fs::cmd_stat(a1);
-            }
+            if a1.is_empty() { println!("Usage: stat <path>"); } else { fs::cmd_stat(a1); }
         }
         "rm" => {
             if a1.is_empty() {
                 println!("Usage: rm [-rf] <path>");
             } else if a1 == "-rf" || a1 == "-r" || a1 == "-f" {
-                if a2.is_empty() {
-                    println!("Usage: rm -rf <path>");
-                } else {
-                    fs::cmd_rm_rf(a2);
-                }
+                if a2.is_empty() { println!("Usage: rm -rf <path>"); } else { fs::cmd_rm_rf(a2); }
             } else {
                 fs::cmd_rm(a1);
             }
         }
         "rmdir" => {
-            if a1.is_empty() {
-                println!("Usage: rmdir <dir>");
-            } else {
-                fs::cmd_rmdir(a1);
-            }
+            if a1.is_empty() { println!("Usage: rmdir <dir>"); } else { fs::cmd_rmdir(a1); }
         }
         "mv" => {
             if a1.is_empty() || a2.is_empty() {
@@ -102,11 +78,7 @@ pub fn execute(input: &str) {
             }
         }
         "readlink" => {
-            if a1.is_empty() {
-                println!("Usage: readlink <path>");
-            } else {
-                fs::cmd_readlink(a1);
-            }
+            if a1.is_empty() { println!("Usage: readlink <path>"); } else { fs::cmd_readlink(a1); }
         }
         "chmod" => {
             if a1.is_empty() || a2.is_empty() {
@@ -117,18 +89,10 @@ pub fn execute(input: &str) {
         }
         "df" => fs::cmd_df(),
         "mount" => {
-            if a1.is_empty() {
-                fs::cmd_mount_list();
-            } else {
-                fs::cmd_mount(a1, a2);
-            }
+            if a1.is_empty() { fs::cmd_mount_list(); } else { fs::cmd_mount(a1, a2); }
         }
         "umount" => {
-            if a1.is_empty() {
-                println!("Usage: umount <path>");
-            } else {
-                fs::cmd_umount(a1);
-            }
+            if a1.is_empty() { println!("Usage: umount <path>"); } else { fs::cmd_umount(a1); }
         }
         "echo" => system::cmd_echo(rest),
         "history" => system::cmd_history(),
@@ -148,11 +112,7 @@ pub fn execute(input: &str) {
             if a1.is_empty() {
                 println!("Usage: ext2write <path> <text>");
             } else {
-                let text = if rest.len() > a1.len() {
-                    rest[a1.len()..].trim_start()
-                } else {
-                    ""
-                };
+                let text = if rest.len() > a1.len() { rest[a1.len()..].trim_start() } else { "" };
                 ext2_cmds::cmd_ext2_write(a1, text);
             }
         }
@@ -160,40 +120,24 @@ pub fn execute(input: &str) {
             if a1.is_empty() {
                 println!("Usage: ext2append <path> <text>");
             } else {
-                let text = if rest.len() > a1.len() {
-                    rest[a1.len()..].trim_start()
-                } else {
-                    ""
-                };
+                let text = if rest.len() > a1.len() { rest[a1.len()..].trim_start() } else { "" };
                 ext2_cmds::cmd_ext2_append(a1, text);
             }
         }
         "ext2mkdir" => {
-            if a1.is_empty() {
-                println!("Usage: ext2mkdir <path>");
-            } else {
-                ext2_cmds::cmd_ext2_mkdir(a1);
-            }
+            if a1.is_empty() { println!("Usage: ext2mkdir <path>"); } else { ext2_cmds::cmd_ext2_mkdir(a1); }
         }
         "ext2rm" => {
             if a1.is_empty() {
                 println!("Usage: ext2rm [-rf] <path>");
             } else if a1 == "-rf" || a1 == "-r" {
-                if a2.is_empty() {
-                    println!("Usage: ext2rm -rf <path>");
-                } else {
-                    ext2_cmds::cmd_ext2_rm_rf(a2);
-                }
+                if a2.is_empty() { println!("Usage: ext2rm -rf <path>"); } else { ext2_cmds::cmd_ext2_rm_rf(a2); }
             } else {
                 ext2_cmds::cmd_ext2_rm(a1);
             }
         }
         "ext2rmdir" => {
-            if a1.is_empty() {
-                println!("Usage: ext2rmdir <path>");
-            } else {
-                ext2_cmds::cmd_ext2_rmdir(a1);
-            }
+            if a1.is_empty() { println!("Usage: ext2rmdir <path>"); } else { ext2_cmds::cmd_ext2_rmdir(a1); }
         }
         "ext2ln" => {
             if a1 == "-s" {
@@ -257,13 +201,186 @@ pub fn execute(input: &str) {
         "ext4extents" => ext2_cmds::cmd_ext4_enable_extents(),
         "ext4checksums" => ext2_cmds::cmd_ext4_checksums(),
         "ext4extinfo" => {
+            if a1.is_empty() { println!("Usage: ext4extinfo <path>"); } else { ext2_cmds::cmd_ext4_extent_info(a1); }
+        }
+
+        "net" => {
+            crate::net::poll();
+            crate::net::cmd_net(rest);
+        }
+
+        "dhcp" => {
+            crate::net::cmd_dhcp();
+        }
+
+        "ping" => {
             if a1.is_empty() {
-                println!("Usage: ext4extinfo <path>");
+                println!("Usage: ping <ip|host> [count]");
             } else {
-                ext2_cmds::cmd_ext4_extent_info(a1);
+                let count = a2.parse::<usize>().unwrap_or(usize::MAX);
+                match parse_ip(a1) {
+                    Some(ip) => {
+                        crate::net::cmd_ping(a1, &ip, count);
+                    }
+                    None => {
+                        crate::cprintln!(57, 197, 187, "ping: resolving {}...", a1);
+                        let dns = crate::net::get_dns();
+                        match crate::net::dns::resolve(a1, &dns) {
+                            Some(ip) => {
+                                crate::net::cmd_ping(a1, &ip, count);
+                            }
+                            None => {
+                                crate::print_error!("ping: cannot resolve '{}'", a1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        "fetch" => {
+            if a1.is_empty() {
+                println!("Usage: fetch <host|ip> [port]");
+            } else {
+                cmd_fetch(a1, a2);
+            }
+        }
+
+        "ntp" => {
+            x86_64::instructions::interrupts::enable();
+            crate::net::ntp::cmd_ntp(a1);
+        }
+
+        "traceroute" | "tr" => {
+            if a1.is_empty() {
+                println!("Usage: traceroute <host|ip>");
+            } else {
+                x86_64::instructions::interrupts::enable();
+                crate::net::traceroute::cmd_traceroute(a1);
             }
         }
 
         _ => println!("Unknown: '{}'", cmd),
     }
+}
+
+fn cmd_fetch(host: &str, port_str: &str) {
+    let (host, port, use_tls) = if host.starts_with("https://") {
+        let h = &host[8..];
+        (h, port_str.parse().unwrap_or(443u16), true)
+    } else if host.starts_with("http://") {
+        let h = &host[7..];
+        (h, port_str.parse().unwrap_or(80u16), false)
+    } else {
+        let p: u16 = port_str.parse().unwrap_or(80);
+        (host, p, p == 443)
+    };
+
+    let dns = crate::net::get_dns();
+    let ip = match parse_ip(host) {
+        Some(ip) => ip,
+        None => {
+            crate::cprintln!(57, 197, 187, "fetch: resolving {}...", host);
+            match crate::net::dns::resolve(host, &dns) {
+                Some(ip) => ip,
+                None => {
+                    crate::print_error!("fetch: cannot resolve '{}'", host);
+                    return;
+                }
+            }
+        }
+    };
+
+    crate::cprintln!(57, 197, 187,
+        "fetch: connecting to {}.{}.{}.{}:{} ({})...",
+        ip[0], ip[1], ip[2], ip[3], port,
+        if use_tls { "TLS" } else { "plain" }
+    );
+    x86_64::instructions::interrupts::enable();
+
+    let mut req_buf = [0u8; 256];
+    let req_len = build_http_request(host, &mut req_buf);
+
+    if use_tls {
+        crate::cprintln!(120, 200, 200, "fetch: TLS handshake (RSA 2048)...");
+        let mut stream = match crate::net::tls::TlsStream::connect(host, ip, port) {
+            Some(s) => s,
+            None => {
+                crate::print_error!("fetch: TLS handshake failed");
+                return;
+            }
+        };
+        crate::print_success!("fetch: TLS connected");
+        if !stream.send(&req_buf[..req_len]) {
+            crate::print_error!("fetch: send failed");
+            stream.close();
+            return;
+        }
+        crate::cprintln!(120, 200, 200, "fetch: waiting for response...");
+        let data = stream.recv_all(8_000_000);
+        print_response(data);
+        stream.close();
+    } else {
+        let mut sock = match crate::net::tcp::TcpSocket::connect(ip, port) {
+            Some(s) => s,
+            None => {
+                crate::print_error!("fetch: connection failed");
+                return;
+            }
+        };
+        crate::print_success!("fetch: connected");
+        if !sock.send(&req_buf[..req_len]) {
+            crate::print_error!("fetch: send failed");
+            sock.close();
+            return;
+        }
+        crate::cprintln!(120, 200, 200, "fetch: waiting for response...");
+        let data = sock.recv_all(8_000_000);
+        print_response(data);
+        sock.close();
+    }
+}
+
+fn print_response(data: &[u8]) {
+    if data.is_empty() {
+        crate::print_warn!("fetch: no data received");
+        return;
+    }
+    let show = data.len().min(4096);
+    
+    extern crate alloc;
+    let mut text = alloc::string::String::with_capacity(show);
+    
+    for &b in &data[..show] {
+        if b == b'\n' || b == b'\r' || b == b'\t' || (b >= 32 && b <= 126) {
+            text.push(b as char);
+        } else {
+            text.push('.');
+        }
+    }
+    
+    crate::println!("{}", text);
+    
+    if data.len() > show {
+        crate::cprintln!(120, 140, 140, "... ({} bytes total, showing first 4096)", data.len());
+    }
+}
+
+fn build_http_request(host: &str, buf: &mut [u8; 256]) -> usize {
+    let mut pos = 0usize;
+    let write = |buf: &mut [u8; 256], pos: &mut usize, s: &[u8]| {
+        let l = s.len().min(256 - *pos);
+        buf[*pos..*pos + l].copy_from_slice(&s[..l]);
+        *pos += l;
+    };
+    write(buf, &mut pos, b"GET / HTTP/1.0\r\nHost: ");
+    write(buf, &mut pos, host.as_bytes());
+    write(buf, &mut pos, b"\r\nConnection: close\r\n\r\n");
+    pos
+}
+
+fn parse_ip(s: &str) -> Option<[u8; 4]> {
+    let mut p = s.split('.');
+    Some([p.next()?.parse().ok()?, p.next()?.parse().ok()?,
+          p.next()?.parse().ok()?, p.next()?.parse().ok()?])
 }

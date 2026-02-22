@@ -47,7 +47,7 @@ impl AddressSpace {
         }
     }
 
-    pub fn truncate_to(&mut self, new_page_count: usize) -> TruncateIter {
+    pub fn truncate_to(&mut self, new_page_count: usize) -> TruncateIter<'_> {
         TruncateIter {
             space: self,
             pos: new_page_count,
@@ -68,7 +68,7 @@ impl AddressSpace {
         ((size as usize) + PAGE_SIZE - 1) / PAGE_SIZE
     }
 
-    pub fn iter_pages(&self) -> PageIter {
+    pub fn iter_pages(&self) -> PageIter<'_> {
         PageIter {
             space: self,
             pos: 0,
