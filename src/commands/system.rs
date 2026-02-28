@@ -11,7 +11,7 @@ pub fn cmd_echo(text: &str) {
 pub fn cmd_info() {
     let (vn, mn) = with_vfs_ro(|v| (v.total_vnodes(), v.total_mounts()));
     let ticks = crate::vfs::procfs::uptime_ticks();
-    let total_secs = ticks / 18;
+    let total_secs = ticks / 1000;
     let hours = total_secs / 3600;
     let mins = (total_secs % 3600) / 60;
     let secs = total_secs % 60;
@@ -19,7 +19,7 @@ pub fn cmd_info() {
     let heap_free = allocator::free();
     let heap_total = allocator::HEAP_SIZE;
 
-    cprintln!(57, 197, 187, "  MikuOS v0.0.8");
+    cprintln!(57, 197, 187, "  MikuOS v0.0.9");
     cprintln!(230, 240, 240, "  VNodes: {}/{}", vn, crate::vfs::MAX_VNODES);
     cprintln!(230, 240, 240, "  Mounts: {}", mn);
     cprintln!(230, 240, 240, "  Heap:   {} / {} KB used", heap_used / 1024, heap_total / 1024);

@@ -1,6 +1,9 @@
 pub mod ext2_cmds;
+pub mod ext3_cmds;
+pub mod ext4_cmds;
 pub mod fs;
 pub mod system;
+pub mod mkfs_cmds;
 
 use crate::{println, serial_println};
 
@@ -191,6 +194,78 @@ pub fn execute(input: &str) {
         "ext2cache" => ext2_cmds::cmd_ext2_cache(),
         "ext2cacheflush" => ext2_cmds::cmd_ext2_cache_flush(),
 
+        "ext3mount" => ext3_cmds::cmd_ext3_mount(rest),
+        "ext3ls" => ext3_cmds::cmd_ext3_ls(a1),
+        "ext3cat" => ext3_cmds::cmd_ext3_cat(a1),
+        "ext3stat" => ext3_cmds::cmd_ext3_stat(a1),
+        "ext3write" => {
+            if a1.is_empty() {
+                println!("Usage: ext3write <path> <text>");
+            } else {
+                let text = if rest.len() > a1.len() { rest[a1.len()..].trim_start() } else { "" };
+                ext3_cmds::cmd_ext3_write(a1, text);
+            }
+        }
+        "ext3append" => {
+            if a1.is_empty() {
+                println!("Usage: ext3append <path> <text>");
+            } else {
+                let text = if rest.len() > a1.len() { rest[a1.len()..].trim_start() } else { "" };
+                ext3_cmds::cmd_ext3_append(a1, text);
+            }
+        }
+        "ext3mkdir" => {
+            if a1.is_empty() { println!("Usage: ext3mkdir <path>"); } else { ext3_cmds::cmd_ext3_mkdir(a1); }
+        }
+        "ext3rm" => {
+            if a1.is_empty() { println!("Usage: ext3rm <path>"); } else { ext3_cmds::cmd_ext3_rm(a1); }
+        }
+        "ext3rmdir" => {
+            if a1.is_empty() { println!("Usage: ext3rmdir <path>"); } else { ext3_cmds::cmd_ext3_rmdir(a1); }
+        }
+        "ext3tree" => ext3_cmds::cmd_ext3_tree(a1),
+        "ext3du" => ext3_cmds::cmd_ext3_du(a1),
+
+        "ext4mount" => ext4_cmds::cmd_ext4_mount(rest),
+        "ext4ls" => ext4_cmds::cmd_ext4_ls(a1),
+        "ext4cat" => ext4_cmds::cmd_ext4_cat(a1),
+        "ext4stat" => ext4_cmds::cmd_ext4_stat(a1),
+        "ext4write" => {
+            if a1.is_empty() {
+                println!("Usage: ext4write <path> <text>");
+            } else {
+                let text = if rest.len() > a1.len() { rest[a1.len()..].trim_start() } else { "" };
+                ext4_cmds::cmd_ext4_write(a1, text);
+            }
+        }
+        "ext4append" => {
+            if a1.is_empty() {
+                println!("Usage: ext4append <path> <text>");
+            } else {
+                let text = if rest.len() > a1.len() { rest[a1.len()..].trim_start() } else { "" };
+                ext4_cmds::cmd_ext4_append(a1, text);
+            }
+        }
+        "ext4mkdir" => {
+            if a1.is_empty() { println!("Usage: ext4mkdir <path>"); } else { ext4_cmds::cmd_ext4_mkdir(a1); }
+        }
+        "ext4rm" => {
+            if a1.is_empty() { println!("Usage: ext4rm <path>"); } else { ext4_cmds::cmd_ext4_rm(a1); }
+        }
+        "ext4rmdir" => {
+            if a1.is_empty() { println!("Usage: ext4rmdir <path>"); } else { ext4_cmds::cmd_ext4_rmdir(a1); }
+        }
+        "ext4cp" => {
+            if a1.is_empty() || a2.is_empty() {
+                println!("Usage: ext4cp <src> <dst>");
+            } else {
+                ext4_cmds::cmd_ext4_cp(a1, a2);
+            }
+        }
+        "ext4tree" => ext4_cmds::cmd_ext4_tree(a1),
+        "ext4du" => ext4_cmds::cmd_ext4_du(a1),
+        "ext4fsck" => ext4_cmds::cmd_ext4_fsck(),
+
         "ext3mkjournal" => ext2_cmds::cmd_ext3_mkjournal(),
         "ext3info" => ext2_cmds::cmd_ext3_info(),
         "ext3journal" => ext2_cmds::cmd_ext3_journal(),
@@ -202,6 +277,23 @@ pub fn execute(input: &str) {
         "ext4checksums" => ext2_cmds::cmd_ext4_checksums(),
         "ext4extinfo" => {
             if a1.is_empty() { println!("Usage: ext4extinfo <path>"); } else { ext2_cmds::cmd_ext4_extent_info(a1); }
+        }
+
+        "mkfs.ext2" => {
+            if a1.is_empty() { println!("Usage: mkfs.ext2 <drive 0-3>"); }
+            else { mkfs_cmds::cmd_mkfs_ext2(rest); }
+        }
+        "mkfs.ext3" => {
+            if a1.is_empty() { println!("Usage: mkfs.ext3 <drive 0-3>"); }
+            else { mkfs_cmds::cmd_mkfs_ext3(rest); }
+        }
+        "mkfs.ext4" => {
+            if a1.is_empty() { println!("Usage: mkfs.ext4 <drive 0-3>"); }
+            else { mkfs_cmds::cmd_mkfs_ext4(rest); }
+        }
+        "mkfs.dry" => {
+            if a1.is_empty() || a2.is_empty() { println!("Usage: mkfs.dry <drive 0-3> <ext2|ext3|ext4>"); }
+            else { mkfs_cmds::cmd_mkfs_dry(a1, a2); }
         }
 
         "net" => {

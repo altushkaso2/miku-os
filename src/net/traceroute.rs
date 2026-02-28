@@ -144,7 +144,6 @@ pub fn run(hostname: &str, target_ip: &[u8; 4]) {
                 if icmp.len() < 8 { continue; }
 
                 let icmp_type = icmp[0];
-                let icmp_code = icmp[1];
 
                 let rtt_us = rdtsc().wrapping_sub(t_start_rtt) / 2500;
                 let rtt_ms_i = rtt_us / 1000;
@@ -182,7 +181,7 @@ pub fn run(hostname: &str, target_ip: &[u8; 4]) {
             }
 
             if got { break; }
-            if crate::vfs::procfs::uptime_ticks().wrapping_sub(t_start_wait) >= 36 { break; }
+            if crate::vfs::procfs::uptime_ticks().wrapping_sub(t_start_wait) >= 2000 { break; }
             core::hint::spin_loop();
         }
 

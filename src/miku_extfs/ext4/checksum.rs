@@ -137,4 +137,124 @@ impl MikuFS {
             inode.write_u16(130, ((csum >> 16) & 0xFFFF) as u16);
         }
     }
+
+    fn read_bitmap_block(&mut self, bitmap_block: u32) -> Result<[u8; 4096], FsError> {
+        let mut buf = [0u8; 4096];
+        let bs = self.block_size as usize;
+        let sectors = (bs + 511) / 512;
+        let base_lba = self.block_to_lba(bitmap_block);
+        for s in 0..sectors as u32 {
+            let mut sector = [0u8; 512];
+            self.reader.read_sector(base_lba + s, &mut sector)?;
+            let off = s as usize * 512;
+            buf[off..off + 512].copy_from_slice(&sector);
+        }
+        Ok(buf)
+    }
+
+    pub fn compute_block_bitmap_csum(&mut self, group: usize) -> Result<u32, FsError> {
+        if group >= 32 {
+            return Ok(0);
+        }
+        let bitmap_block = self.groups[group].block_bitmap();
+        let buf = self.read_bitmap_block(bitmap_block)?;
+        let bytes = ((self.blocks_per_group + 7) / 8) as usize;
+        let uuid_copy = {
+            let mut u = [0u8; 16];
+            u.copy_from_slice(self.superblock.uuid());
+            u
+        };
+        Ok(crc32c::ext4_bitmap_csum(&uuid_copy, &buf[..bytes]))
+    }
+
+    pub fn compute_inode_bitmap_csum(&mut self, group: usize) -> Result<u32, FsError> {
+        if group >= 32 {
+            return Ok(0);
+        }
+        let bitmap_block = self.groups[group].inode_bitmap();
+        let buf = self.read_bitmap_block(bitmap_block)?;
+        let bytes = ((self.inodes_per_group + 7) / 8) as usize;
+        let uuid_copy = {
+            let mut u = [0u8; 16];
+            u.copy_from_slice(self.superblock.uuid());
+            u
+        };
+        Ok(crc32c::ext4_bitmap_csum(&uuid_copy, &buf[..bytes]))
+    }
+
+    pub fn update_block_bitmap_csum(&mut self, group: usize) -> Result<(), FsError> {
+        if !self.superblock.has_metadata_csum() {
+            return Ok(());
+        }
+        if group >= 32 {
+            return Ok(());
+        }
+        let csum = self.compute_block_bitmap_csum(group)?;
+        let gd_size = self.superblock.group_desc_size() as usize;
+        self.groups[group].write_u16(24, (csum & 0xFFFF) as u16);
+        if gd_size >= 64 {
+            self.groups[group].write_u16(56, ((csum >> 16) & 0xFFFF) as u16);
+        }
+        Ok(())
+    }
+
+    pub fn update_inode_bitmap_csum(&mut self, group: usize) -> Result<(), FsError> {
+        if !self.superblock.has_metadata_csum() {
+            return Ok(());
+        }
+        if group >= 32 {
+            return Ok(());
+        }
+        let csum = self.compute_inode_bitmap_csum(group)?;
+        let gd_size = self.superblock.group_desc_size() as usize;
+        self.groups[group].write_u16(26, (csum & 0xFFFF) as u16);
+        if gd_size >= 64 {
+            self.groups[group].write_u16(58, ((csum >> 16) & 0xFFFF) as u16);
+        }
+        Ok(())
+    }
+
+    pub fn verify_block_bitmap_csum(&mut self, group: usize) -> bool {
+        if !self.superblock.has_metadata_csum() {
+            return true;
+        }
+        if group >= 32 {
+            return false;
+        }
+        let computed = match self.compute_block_bitmap_csum(group) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let stored_lo = self.groups[group].block_bitmap_csum_lo();
+        let gd_size = self.superblock.group_desc_size() as usize;
+        if gd_size >= 64 {
+            let stored_hi = self.groups[group].block_bitmap_csum_hi();
+            let stored = (stored_lo as u32) | ((stored_hi as u32) << 16);
+            computed == stored
+        } else {
+            (computed & 0xFFFF) as u16 == stored_lo
+        }
+    }
+
+    pub fn verify_inode_bitmap_csum(&mut self, group: usize) -> bool {
+        if !self.superblock.has_metadata_csum() {
+            return true;
+        }
+        if group >= 32 {
+            return false;
+        }
+        let computed = match self.compute_inode_bitmap_csum(group) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let stored_lo = self.groups[group].inode_bitmap_csum_lo();
+        let gd_size = self.superblock.group_desc_size() as usize;
+        if gd_size >= 64 {
+            let stored_hi = self.groups[group].inode_bitmap_csum_hi();
+            let stored = (stored_lo as u32) | ((stored_hi as u32) << 16);
+            computed == stored
+        } else {
+            (computed & 0xFFFF) as u16 == stored_lo
+        }
+    }
 }

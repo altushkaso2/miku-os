@@ -1,4 +1,4 @@
-use limine::request::{ExecutableAddressRequest, HhdmRequest};
+use limine::request::{ExecutableAddressRequest, HhdmRequest, MemoryMapRequest};
 use limine::request::{FramebufferRequest, StackSizeRequest};
 use limine::BaseRevision;
 
@@ -29,3 +29,7 @@ pub static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 #[used]
 #[link_section = ".requests"]
 pub static KERNEL_ADDR_REQUEST: ExecutableAddressRequest = ExecutableAddressRequest::new();
+
+#[used]
+#[link_section = ".requests"]
+pub static MEMMAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();

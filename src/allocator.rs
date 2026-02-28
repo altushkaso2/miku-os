@@ -1,6 +1,6 @@
 use linked_list_allocator::LockedHeap;
 
-pub const HEAP_SIZE: usize = 256 * 1024;
+pub const HEAP_SIZE: usize = 16 * 1024 * 1024;
 
 #[repr(align(4096))]
 struct HeapMemory([u8; HEAP_SIZE]);

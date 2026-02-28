@@ -27,11 +27,13 @@ static mut EXT2_STORAGE: MikuFS = MikuFS {
     txn_tags: [TxnTag {
         fs_block: 0,
         journal_pos: 0,
-    }; 16],
+    }; 64],
     txn_tag_count: 0,
-    txn_revokes: [0; 32],
+    txn_revokes: [0; 128],
     txn_revoke_count: 0,
     block_cache: None,
+    superblock_dirty: false,
+    groups_dirty: [false; 32],
 };
 
 static mut EXT2_READY: bool = false;
@@ -67,6 +69,12 @@ where
         }
         Some(f(&mut EXT2_STORAGE))
     }
+}
+
+pub unsafe fn force_unmount() {
+    let _guard = EXT2_LOCK.lock();
+    EXT2_READY = false;
+    EXT2_STORAGE.block_cache = None;
 }
 
 fn split_parent_name(path: &str) -> (&str, &str) {
@@ -123,15 +131,15 @@ fn parse_u16(s: &str) -> Option<u16> {
 }
 
 pub fn cmd_ext2_mount(_args: &str) {
-    serial_println!("[ext2] scanning drivers...");
+    serial_println!("[miku_extfs] scanning drivers...");
     let drive_order: [usize; 4] = [2, 1, 3, 0];
     for &i in &drive_order {
-        serial_println!("[ext2] trying drive {} ...", i);
+        serial_println!("[miku_extfs] trying drive {} ...", i);
         if try_mount(i) {
             return;
         }
     }
-    print_error!("  no ext2 found on any drive");
+    print_error!("  no extfs found on any drive");
 }
 
 fn try_mount(drive_index: usize) -> bool {
@@ -152,7 +160,7 @@ fn try_mount(drive_index: usize) -> bool {
         Ok(()) => {}
         Err(e) => {
             serial_println!(
-                "[ext2] drive {} - cannot read sector 2: {:?}",
+                "[miku_extfs] drive {} - cannot read sector 2: {:?}",
                 drive_index,
                 e
             );
@@ -165,7 +173,7 @@ fn try_mount(drive_index: usize) -> bool {
     let magic_lo = u16::from_le_bytes([sector[56], sector[57]]);
     if magic_lo != EXT2_MAGIC {
         serial_println!(
-            "[ext2] drive {} - bad magic 0x{:04X}, skip",
+            "[miku_extfs] drive {} - bad magic 0x{:04X}, skip",
             drive_index,
             magic_lo
         );
@@ -175,7 +183,7 @@ fn try_mount(drive_index: usize) -> bool {
         Ok(()) => {}
         Err(e) => {
             serial_println!(
-                "[ext2] drive {} - cannot read sector 3: {:?}",
+                "[miku_extfs] drive {} - cannot read sector 3: {:?}",
                 drive_index,
                 e
             );
@@ -185,7 +193,7 @@ fn try_mount(drive_index: usize) -> bool {
     unsafe {
         EXT2_STORAGE.superblock.data[512..1024].copy_from_slice(&sector);
     }
-    serial_println!("[ext2] drive {} - ext2 found!", drive_index);
+    serial_println!("[miku_extfs] drive {} - found!", drive_index);
     let block_size = unsafe { EXT2_STORAGE.superblock.block_size() };
     let inodes_per_group = unsafe { EXT2_STORAGE.superblock.inodes_per_group() };
     let blocks_per_group = unsafe { EXT2_STORAGE.superblock.blocks_per_group() };
@@ -193,7 +201,7 @@ fn try_mount(drive_index: usize) -> bool {
     let group_count = (blocks_count + blocks_per_group - 1) / blocks_per_group;
     let gd_size = unsafe { EXT2_STORAGE.superblock.group_desc_size() } as usize;
     if group_count as usize > 32 {
-        print_error!("  ext2: too many block groups ({})", group_count);
+        print_error!("  miku_extfs: too many block groups ({})", group_count);
         return false;
     }
     unsafe {
@@ -213,7 +221,7 @@ fn try_mount(drive_index: usize) -> bool {
     let mut gd_idx = 0usize;
     for s in 0..total_sectors {
         if reader.read_sector(start_lba + s, &mut sector).is_err() {
-            serial_println!("[ext2] gdt read error at lba {}", start_lba + s);
+            serial_println!("[miku_extfs] gdt read error at lba {}", start_lba + s);
             return false;
         }
         let mut pos = 0usize;
@@ -247,6 +255,16 @@ fn try_mount(drive_index: usize) -> bool {
         EXT2_READY = true;
         EXT2_STORAGE.init_cache();
         let _ = EXT2_STORAGE.init_journal();
+        if EXT2_STORAGE.journal_active && !EXT2_STORAGE.read_journal_superblock()
+            .map(|j| j.is_clean())
+            .unwrap_or(true)
+        {
+            match EXT2_STORAGE.ext3_recover() {
+                Ok(0) => {}
+                Ok(n) => serial_println!("[ext3] recovery: replayed {} blocks", n),
+                Err(e) => serial_println!("[ext3] recovery failed: {:?}", e),
+            }
+        }
     }
     let total_inodes = unsafe { EXT2_STORAGE.superblock.inodes_count() };
     let free_blocks = unsafe { EXT2_STORAGE.superblock.free_blocks_count() };
@@ -392,6 +410,8 @@ pub fn cmd_ext2_write(path: &str, text: &str) {
         println!("Usage: ext2write <path> <text>");
         return;
     }
+
+    let disk_sw = crate::timing::Stopwatch::start();
     let result = with_ext2(|fs| -> Result<u32, FsError> {
         let (parent_ino, filename) = resolve_parent_and_name(fs, path)?;
         match fs.ext2_lookup_in_dir(parent_ino, filename)? {
@@ -407,11 +427,16 @@ pub fn cmd_ext2_write(path: &str, text: &str) {
             }
         }
     });
+    let disk_ms = disk_sw.elapsed_ms();
+
+    let render_sw = crate::timing::Stopwatch::start();
     match result {
-        Some(Ok(ino)) => print_success!("  written to inode {}", ino),
-        Some(Err(e)) => print_error!("  ext2write: {:?}", e),
-        None => print_error!("  ext2 not mounted"),
+        Some(Ok(ino)) => print_success!("  written to inode {}  [disk {}ms]", ino, disk_ms),
+        Some(Err(e))  => print_error!("  ext2write: {:?}", e),
+        None          => print_error!("  ext2 not mounted"),
     }
+    let render_us = render_sw.elapsed_us();
+    crate::serial_println!("[timing] ext2write disk={}ms render={}us", disk_ms, render_us);
 }
 
 pub fn cmd_ext2_mkdir(path: &str) {
@@ -624,9 +649,9 @@ pub fn cmd_ext2_tree(path: &str) {
                     cprint!(120, 140, 140, "    ");
                 }
                 if e.is_last {
-                    cprint!(120, 140, 140, "└── ");
+                    cprint!(120, 140, 140, "/ ");
                 } else {
-                    cprint!(120, 140, 140, "├── ");
+                    cprint!(120, 140, 140, "--- ");
                 }
                 if e.is_dir {
                     cprintln!(0, 220, 220, "{}/", e.name_str());
@@ -958,17 +983,37 @@ pub fn cmd_ext4_checksums() {
         cprintln!(57, 197, 187, "  Checksum Verification");
         let sb_ok = fs.verify_superblock_csum();
         println!("  Superblock: {}", if sb_ok { "ok" } else { "fail" });
+
         let gc = fs.group_count as usize;
         let mut gd_ok = 0u32;
         let mut gd_fail = 0u32;
+        let mut bb_ok = 0u32;
+        let mut bb_fail = 0u32;
+        let mut ib_ok = 0u32;
+        let mut ib_fail = 0u32;
+
         for g in 0..gc.min(32) {
             if fs.verify_group_desc_csum(g) {
                 gd_ok += 1;
             } else {
                 gd_fail += 1;
             }
+            if fs.verify_block_bitmap_csum(g) {
+                bb_ok += 1;
+            } else {
+                bb_fail += 1;
+            }
+            if fs.verify_inode_bitmap_csum(g) {
+                ib_ok += 1;
+            } else {
+                ib_fail += 1;
+            }
         }
-        println!("  Group descs: {} ok, {} fail", gd_ok, gd_fail);
+
+        println!("  Group descs:    {} ok, {} fail", gd_ok, gd_fail);
+        println!("  Block bitmaps:  {} ok, {} fail", bb_ok, bb_fail);
+        println!("  Inode bitmaps:  {} ok, {} fail", ib_ok, ib_fail);
+
         let mut ino_ok = 0u32;
         let mut ino_fail = 0u32;
         let max_check = fs.superblock.inodes_count().min(64);
@@ -1030,4 +1075,32 @@ pub fn cmd_ext4_extent_info(path: &str) {
         Some(Err(e)) => print_error!("  ext4extinfo: {:?}", e),
         None => print_error!("  ext2 not mounted"),
     }
+}
+
+pub fn cmd_ext4_write(path: &str, text: &str) {
+    if path.is_empty() || text.is_empty() {
+        println!("Usage: ext4write <path> <text>");
+        return;
+    }
+    let disk_sw = crate::timing::Stopwatch::start();
+    let result = with_ext2_pub(|fs| -> Result<u32, FsError> {
+        let (parent_ino, filename) = resolve_parent_and_name(fs, path)?;
+        fs.ext3_write_file_create_or_overwrite(parent_ino, filename, 0o644, text.as_bytes())
+    });
+    let disk_ms = disk_sw.elapsed_ms();
+    let render_sw = crate::timing::Stopwatch::start();
+    match result {
+        Some(Ok(ino)) => print_success!(
+            "  [ext4] written to inode {} (extents+journal)  [disk {}ms]",
+            ino, disk_ms
+        ),
+        Some(Err(e)) => print_error!("  ext4write: {:?}", e),
+        None => print_error!("  not mounted"),
+    }
+    let render_us = render_sw.elapsed_us();
+    crate::serial_println!(
+        "[timing] ext4write disk={}ms render={}us",
+        disk_ms,
+        render_us
+    );
 }

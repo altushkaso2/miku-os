@@ -23,18 +23,7 @@ static mut VFS_STORAGE: VfsStorage = VfsStorage {
 
 static VFS_INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-pub fn init_vfs() {
-    crate::serial_println!("[vfs] init start");
-    crate::serial_println!(
-        "[vfs] sizeof MikuVFS  = {}",
-        core::mem::size_of::<MikuVFS>()
-    );
-    crate::serial_println!("[vfs] sizeof VNode    = {}", core::mem::size_of::<VNode>());
-    crate::serial_println!(
-        "[vfs] sizeof PageCache= {}",
-        core::mem::size_of::<PageCache>()
-    );
-
+pub fn init_vfs() -> Result<(), &'static str> {
     unsafe {
         let ptr = VFS_STORAGE.data.as_mut_ptr();
 
@@ -59,6 +48,7 @@ pub fn init_vfs() {
     }
 
     crate::serial_println!("[vfs] init done");
+    Ok(())
 }
 
 fn get_vfs() -> &'static mut MikuVFS {

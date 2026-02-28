@@ -105,6 +105,64 @@ impl MikuFS {
             return self.ensure_indirect_entry(indirect_block, adjusted, group, inode);
         }
 
+        let adjusted = adjusted - ptrs_per_block;
+
+        if adjusted < ptrs_per_block * ptrs_per_block {
+            let mut dind = inode.block(13);
+            if dind == 0 {
+                dind = self.alloc_block(group)?;
+                self.zero_block(dind)?;
+                inode.set_block(13, dind);
+                let blks = inode.blocks() + (self.block_size / 512);
+                inode.set_blocks(blks);
+            }
+            let idx1 = adjusted / ptrs_per_block;
+            let idx2 = adjusted % ptrs_per_block;
+            let mut ind = self.read_indirect_entry(dind, idx1)?;
+            if ind == 0 {
+                ind = self.alloc_block(group)?;
+                self.zero_block(ind)?;
+                self.write_indirect_entry(dind, idx1, ind)?;
+                let blks = inode.blocks() + (self.block_size / 512);
+                inode.set_blocks(blks);
+            }
+            return self.ensure_indirect_entry(ind, idx2, group, inode);
+        }
+
+        let adjusted = adjusted - ptrs_per_block * ptrs_per_block;
+
+        if adjusted < ptrs_per_block * ptrs_per_block * ptrs_per_block {
+            let mut tind = inode.block(14);
+            if tind == 0 {
+                tind = self.alloc_block(group)?;
+                self.zero_block(tind)?;
+                inode.set_block(14, tind);
+                let blks = inode.blocks() + (self.block_size / 512);
+                inode.set_blocks(blks);
+            }
+            let idx1 = adjusted / (ptrs_per_block * ptrs_per_block);
+            let rem = adjusted % (ptrs_per_block * ptrs_per_block);
+            let idx2 = rem / ptrs_per_block;
+            let idx3 = rem % ptrs_per_block;
+            let mut l1 = self.read_indirect_entry(tind, idx1)?;
+            if l1 == 0 {
+                l1 = self.alloc_block(group)?;
+                self.zero_block(l1)?;
+                self.write_indirect_entry(tind, idx1, l1)?;
+                let blks = inode.blocks() + (self.block_size / 512);
+                inode.set_blocks(blks);
+            }
+            let mut l2 = self.read_indirect_entry(l1, idx2)?;
+            if l2 == 0 {
+                l2 = self.alloc_block(group)?;
+                self.zero_block(l2)?;
+                self.write_indirect_entry(l1, idx2, l2)?;
+                let blks = inode.blocks() + (self.block_size / 512);
+                inode.set_blocks(blks);
+            }
+            return self.ensure_indirect_entry(l2, idx3, group, inode);
+        }
+
         Err(FsError::FileTooLarge)
     }
 
@@ -148,9 +206,7 @@ impl MikuFS {
 
         let mut sector = [0u8; 512];
         self.reader.read_sector(lba, &mut sector)?;
-
         sector[offset_in_sector..offset_in_sector + 4].copy_from_slice(&value.to_le_bytes());
-
         self.reader.write_sector(lba, &sector)?;
         Ok(())
     }

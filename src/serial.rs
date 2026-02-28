@@ -1,6 +1,8 @@
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
+use core::fmt;
+use x86_64::instructions::interrupts;
 
 pub struct Serial {
     port: u16,
@@ -57,13 +59,18 @@ impl core::fmt::Write for Serial {
     }
 }
 
+#[doc(hidden)]
+pub fn _print(args: fmt::Arguments) {
+    use core::fmt::Write;
+    interrupts::without_interrupts(|| {
+        COM1.lock().write_fmt(args).unwrap();
+    });
+}
+
 #[macro_export]
 macro_rules! serial_print {
     ($($arg:tt)*) => {
-        {
-            use core::fmt::Write;
-            let _ = write!($crate::serial::COM1.lock(), $($arg)*);
-        }
+        $crate::serial::_print(format_args!($($arg)*))
     };
 }
 

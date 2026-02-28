@@ -68,3 +68,8 @@ pub fn ext4_dirent_csum(uuid: &[u8], inode_num: u32, dir_data: &[u8]) -> u32 {
     let crc = crc32c(crc ^ 0xFFFFFFFF, &ino_bytes);
     crc32c(crc ^ 0xFFFFFFFF, dir_data)
 }
+
+pub fn ext4_bitmap_csum(uuid: &[u8], bitmap_data: &[u8]) -> u32 {
+    let crc = crc32c(0xFFFFFFFF, uuid);
+    crc32c(crc ^ 0xFFFFFFFF, bitmap_data)
+}

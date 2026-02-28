@@ -180,18 +180,15 @@ pub fn map_mmio(phys_addr: u64, size: u64) {
     }
 }
 
-pub fn init() {
+pub fn init() -> Result<(), &'static str> {
+    crate::serial_println!("[net] init: scanning PCI");
     let pci_dev = match pci::find_nic() {
         Some(d) => d,
-        None => {
-            crate::print_warn!("[net] no network adapter found");
-            return;
-        }
+        None => return Err("no network adapter found"),
     };
 
-    crate::print_info!(
-        "[net] found: {} (vendor={:04x} device={:04x} bus={:02x}:{:02x}.{})",
-        pci::device_name(pci_dev.vendor, pci_dev.device),
+    crate::serial_println!(
+        "[net] found: vendor={:04x} device={:04x} bus={:02x}:{:02x}.{}",
         pci_dev.vendor, pci_dev.device,
         pci_dev.bus, pci_dev.dev, pci_dev.func
     );
@@ -203,19 +200,26 @@ pub fn init() {
     match (pci_dev.vendor, pci_dev.device) {
         (VENDOR_INTEL, DEV_E1000_82540EM | DEV_E1000_82545EM | DEV_E1000_82574L
             | DEV_E1000_82579LM | DEV_E1000_I217) => {
+            crate::serial_println!("[net] init: e1000 map_mmio");
             if let Some(mem_phys) = pci_dev.mem_bar(0) {
                 map_mmio(mem_phys, 128 * 1024);
             }
+            crate::serial_println!("[net] init: e1000 driver init");
             if let Some(drv) = e1000::E1000::new(&pci_dev) {
                 state.mac = drv.get_mac();
                 drv_name = pci::device_name(pci_dev.vendor, pci_dev.device);
                 initialized_driver = Some(Box::new(drv));
+                crate::serial_println!("[net] init: e1000 ok");
+            } else {
+                crate::serial_println!("[net] init: e1000 driver returned None");
             }
         }
         (VENDOR_REALTEK, DEV_RTL8168) => {
+            crate::serial_println!("[net] init: rtl8168 map_mmio");
             if let Some(mem_phys) = pci_dev.mem_bar(1).or_else(|| pci_dev.mem_bar(0)) {
                 map_mmio(mem_phys, 0x1000);
             }
+            crate::serial_println!("[net] init: rtl8168 driver init");
             if let Some(drv) = rtl8168::Rtl8168::new(&pci_dev) {
                 state.mac = drv.get_mac();
                 drv_name = "RTL8168 (r8168)";
@@ -223,6 +227,7 @@ pub fn init() {
             }
         }
         (VENDOR_REALTEK, DEV_RTL8139 | DEV_RTL8169) => {
+            crate::serial_println!("[net] init: rtl8139 driver init");
             if let Some(drv) = rtl8139::Rtl8139::new(&pci_dev) {
                 state.mac = drv.get_mac();
                 drv_name = pci::device_name(pci_dev.vendor, pci_dev.device);
@@ -230,32 +235,31 @@ pub fn init() {
             }
         }
         (VENDOR_VIRTIO, DEV_VIRTIO_NET) => {
+            crate::serial_println!("[net] init: virtio-net driver init");
             if let Some(drv) = virtio::VirtioNet::new(&pci_dev) {
                 state.mac = drv.get_mac();
                 drv_name = "VirtIO-net (legacy)";
                 initialized_driver = Some(Box::new(drv));
             } else {
-                crate::print_warn!("[net] virtio-net init failed");
+                return Err("virtio-net driver init failed");
             }
         }
-        _ => {
-            crate::print_warn!("[net] unsupported adapter");
-        }
+        _ => return Err("unsupported network adapter"),
     }
 
     if let Some(drv) = initialized_driver {
         state.driver = Some(drv);
+        let mac = state.mac;
         drop(state);
         *DRIVER_NAME.lock() = drv_name;
         NET_READY.store(true, Ordering::Release);
-        let mac = NET.lock().mac;
-        crate::print_success!(
+        crate::serial_println!(
             "[net] {} ready  mac: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            drv_name,
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+            drv_name, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
         );
+        Ok(())
     } else {
-        crate::print_error!("[net] driver init failed");
+        Err("driver init failed")
     }
 }
 
@@ -530,8 +534,7 @@ fn rdtsc() -> u64 {
 
 fn wait_rdtsc_ms(ms: u64) {
     let start = crate::vfs::procfs::uptime_ticks();
-    let target = (ms * 18) / 1000;
-    let target = if target == 0 { 1 } else { target };
+    let target = if ms == 0 { 1 } else { ms };
     loop {
         if CTRL_C.load(Ordering::SeqCst) { return; }
         if crate::vfs::procfs::uptime_ticks().wrapping_sub(start) >= target { return; }
@@ -596,7 +599,7 @@ pub fn cmd_ping(hostname: &str, target_ip: &[u8; 4], count: usize) {
         sent += 1;
 
         let mut got_reply = false;
-        let t_start = rdtsc(); 
+        let t_start = rdtsc();
         let t_start_wait = crate::vfs::procfs::uptime_ticks();
 
         loop {
@@ -662,7 +665,7 @@ pub fn cmd_ping(hostname: &str, target_ip: &[u8; 4], count: usize) {
             }
 
             if got_reply { break; }
-            if crate::vfs::procfs::uptime_ticks().wrapping_sub(t_start_wait) >= 36 { break; }
+            if crate::vfs::procfs::uptime_ticks().wrapping_sub(t_start_wait) >= 2000 { break; }
             core::hint::spin_loop();
         }
 
@@ -774,7 +777,7 @@ pub fn resolve_arp(target_ip: &[u8; 4], our_ip: &[u8; 4], our_mac: &[u8; 6]) -> 
             if let Some(m) = NET.lock().arp.lookup(&arp_target) {
                 return Some(m);
             }
-            if crate::vfs::procfs::uptime_ticks().wrapping_sub(start) >= 18 { break; }
+            if crate::vfs::procfs::uptime_ticks().wrapping_sub(start) >= 500 { break; }
             core::hint::spin_loop();
         }
     }

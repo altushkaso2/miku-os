@@ -1,6 +1,10 @@
+extern crate alloc;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::fmt;
 use lazy_static::lazy_static;
 use spin::Mutex;
+use x86_64::instructions::interrupts;
 
 lazy_static! {
     pub static ref WRITER: Mutex<Option<Console>> = Mutex::new(None);
@@ -20,202 +24,300 @@ macro_rules! println {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    if let Some(writer) = WRITER.lock().as_mut() {
-        writer.write_fmt(args).unwrap();
-    }
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_mut() {
+            writer.write_fmt(args).unwrap();
+        }
+    });
+}
+
+pub fn print_colored(r: u8, g: u8, b: u8, args: fmt::Arguments) {
+    use core::fmt::Write;
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_mut() {
+            let saved = writer.fg_color;
+            writer.fg_color = [r, g, b];
+            writer.write_fmt(args).unwrap();
+            writer.fg_color = saved;
+        }
+    });
 }
 
 pub fn backspace() {
-    if let Some(writer) = WRITER.lock().as_mut() {
-        writer.backspace();
-    }
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_mut() {
+            writer.backspace();
+        }
+    });
 }
 
 pub fn clear_screen() {
-    if let Some(writer) = WRITER.lock().as_mut() {
-        writer.clear();
-    }
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_mut() {
+            writer.clear();
+        }
+    });
 }
 
 pub fn set_color(r: u8, g: u8, b: u8) {
-    if let Some(writer) = WRITER.lock().as_mut() {
-        writer.fg_color = [r, g, b];
-    }
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_mut() {
+            writer.fg_color = [r, g, b];
+        }
+    });
 }
 
 pub fn reset_color() {
-    if let Some(writer) = WRITER.lock().as_mut() {
-        writer.fg_color = COLOR_MIKU;
-    }
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_mut() {
+            writer.fg_color = COLOR_MIKU;
+        }
+    });
 }
 
 pub fn move_cursor_left() {
-    if let Some(writer) = WRITER.lock().as_mut() {
-        if writer.x_pos > BORDER_PADDING {
-            writer.x_pos -= CHAR_WIDTH;
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_mut() {
+            if writer.x_pos > BORDER_PADDING {
+                writer.x_pos -= CHAR_WIDTH;
+            }
         }
-    }
+    });
 }
 
 pub fn move_cursor_right() {
-    if let Some(writer) = WRITER.lock().as_mut() {
-        writer.x_pos += CHAR_WIDTH;
-    }
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_mut() {
+            writer.x_pos += CHAR_WIDTH;
+        }
+    });
 }
 
 pub fn get_x() -> usize {
-    if let Some(writer) = WRITER.lock().as_ref() {
-        writer.x_pos
-    } else {
-        0
-    }
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_ref() {
+            writer.x_pos
+        } else {
+            0
+        }
+    })
 }
 
 pub fn set_x(x: usize) {
-    if let Some(writer) = WRITER.lock().as_mut() {
-        writer.x_pos = x;
-    }
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_mut() {
+            writer.x_pos = x;
+            writer.cur_col = x.saturating_sub(BORDER_PADDING) / CHAR_WIDTH;
+        }
+    });
 }
 
 pub fn draw_cursor(x: usize) {
-    if let Some(writer) = WRITER.lock().as_mut() {
-        for y in 1..CHAR_HEIGHT - 1 {
-            writer.write_pixel(x, writer.y_pos + y, 200, 220, 220);
-            writer.write_pixel(x + 1, writer.y_pos + y, 200, 220, 220);
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_mut() {
+            for y in 1..CHAR_HEIGHT - 1 {
+                writer.write_pixel_direct(x,     writer.y_pos + y, 200, 220, 220);
+                writer.write_pixel_direct(x + 1, writer.y_pos + y, 200, 220, 220);
+            }
         }
-    }
+    });
 }
 
 pub fn erase_cursor(x: usize) {
-    if let Some(writer) = WRITER.lock().as_mut() {
-        for y in 1..CHAR_HEIGHT - 1 {
-            writer.write_pixel(x, writer.y_pos + y, 0, 0, 0);
-            writer.write_pixel(x + 1, writer.y_pos + y, 0, 0, 0);
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_mut() {
+            for y in 1..CHAR_HEIGHT - 1 {
+                writer.write_pixel_direct(x,     writer.y_pos + y, 0, 0, 0);
+                writer.write_pixel_direct(x + 1, writer.y_pos + y, 0, 0, 0);
+            }
         }
-    }
+    });
 }
 
 pub fn clear_from_x(start_x: usize, count: usize) {
-    if let Some(writer) = WRITER.lock().as_mut() {
-        for i in 0..count {
-            let cx = start_x + i * CHAR_WIDTH;
-            for y in 0..CHAR_HEIGHT {
-                for x in 0..CHAR_WIDTH {
-                    writer.write_pixel(cx + x, writer.y_pos + y, 0, 0, 0);
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_mut() {
+            let start_col = start_x.saturating_sub(BORDER_PADDING) / CHAR_WIDTH;
+            for i in 0..count {
+                let cx = start_x + i * CHAR_WIDTH;
+                for y in 0..CHAR_HEIGHT {
+                    for x in 0..CHAR_WIDTH {
+                        writer.write_pixel_direct(cx + x, writer.y_pos + y, 0, 0, 0);
+                    }
+                }
+                let col = start_col + i;
+                if col < writer.cols {
+                    writer.cells[writer.cur_row * writer.cols + col] = Cell::blank();
                 }
             }
         }
-    }
+    });
 }
 
-pub fn hide_cursor() {
-    if let Some(_writer) = WRITER.lock().as_mut() {}
-}
-
-pub fn show_cursor() {
-    if let Some(_writer) = WRITER.lock().as_mut() {}
-}
+pub fn hide_cursor() {}
+pub fn show_cursor() {}
 
 pub fn clear_char() {
-    if let Some(writer) = WRITER.lock().as_mut() {
-        writer.clear_char_at_cursor();
-    }
+    interrupts::without_interrupts(|| {
+        if let Some(writer) = WRITER.lock().as_mut() {
+            writer.clear_char_at_cursor();
+        }
+    });
 }
 
-pub const COLOR_MIKU: [u8; 3] = [57, 197, 187];
-pub const COLOR_MIKU_DARK: [u8; 3] = [0, 150, 136];
+pub const COLOR_MIKU: [u8; 3]       = [57,  197, 187];
+pub const COLOR_MIKU_DARK: [u8; 3]  = [0,   150, 136];
 pub const COLOR_MIKU_LIGHT: [u8; 3] = [128, 222, 217];
-pub const COLOR_PINK: [u8; 3] = [255, 105, 140];
-pub const COLOR_WHITE: [u8; 3] = [230, 240, 240];
-pub const COLOR_GRAY: [u8; 3] = [120, 140, 140];
-pub const COLOR_GREEN: [u8; 3] = [100, 220, 150];
-pub const COLOR_YELLOW: [u8; 3] = [220, 220, 100];
-pub const COLOR_CYAN: [u8; 3] = [0, 220, 220];
+pub const COLOR_PINK: [u8; 3]       = [255, 105, 140];
+pub const COLOR_WHITE: [u8; 3]      = [230, 240, 240];
+pub const COLOR_GRAY: [u8; 3]       = [120, 140, 140];
+pub const COLOR_GREEN: [u8; 3]      = [100, 220, 150];
+pub const COLOR_YELLOW: [u8; 3]     = [220, 220, 100];
+pub const COLOR_CYAN: [u8; 3]       = [0,   220, 220];
 
 pub const BORDER_PADDING: usize = 10;
-pub const CHAR_WIDTH: usize = 9;
-const LINE_SPACING: usize = 2;
-const CHAR_HEIGHT: usize = 16;
+pub const CHAR_WIDTH: usize     = 9;
+const LINE_SPACING: usize       = 2;
+const CHAR_HEIGHT: usize        = 16;
+const LINE_HEIGHT: usize        = CHAR_HEIGHT + LINE_SPACING;
+
+const MAX_COLS: usize = 160;
+const MAX_ROWS: usize = 60;
+
+#[derive(Clone, Copy)]
+struct Cell {
+    ch: u8,
+    r:  u8,
+    g:  u8,
+    b:  u8,
+}
+
+impl Cell {
+    const fn blank() -> Self {
+        Self { ch: b' ', r: 0, g: 0, b: 0 }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct FrameBufferConfig {
-    pub width: usize,
-    pub height: usize,
-    pub stride: usize,        
+    pub width:           usize,
+    pub height:          usize,
+    pub stride:          usize,
     pub bytes_per_pixel: usize,
-    pub is_bgr: bool,
+    pub is_bgr:          bool,
 }
 
 pub struct Console {
-    framebuffer: &'static mut [u8],
-    width: usize,
-    height: usize,
-    stride: usize,
-    bytes_per_pixel: usize,
-    pub x_pos: usize,
-    pub y_pos: usize,
-    pub fg_color: [u8; 3],
-    pub is_bgr: bool,
+    framebuffer:      &'static mut [u8],
+    cells:            Vec<Cell>,
+    cols:             usize,
+    rows:             usize,
+    cur_col:          usize,
+    cur_row:          usize,
+    width:            usize,
+    height:           usize,
+    stride:           usize,
+    bytes_per_pixel:  usize,
+    pub x_pos:        usize,
+    pub y_pos:        usize,
+    pub fg_color:     [u8; 3],
+    pub is_bgr:       bool,
 }
 
 impl Console {
     pub fn new_limine(framebuffer: &'static mut [u8], config: FrameBufferConfig) -> Self {
-        framebuffer.fill(0);
-
+        let cols = ((config.width.saturating_sub(BORDER_PADDING)) / CHAR_WIDTH).min(MAX_COLS);
+        let rows = ((config.height.saturating_sub(BORDER_PADDING)) / LINE_HEIGHT).min(MAX_ROWS);
+        let cells = vec![Cell::blank(); cols * rows];
+        let fill_end = (config.height * config.stride * config.bytes_per_pixel)
+            .min(framebuffer.len());
+        framebuffer[..fill_end].fill(0);
         Self {
             framebuffer,
-            width: config.width,
-            height: config.height,
-            stride: config.stride,
+            cells,
+            cols,
+            rows,
+            cur_col: 0,
+            cur_row: 0,
+            width:           config.width,
+            height:          config.height,
+            stride:          config.stride,
             bytes_per_pixel: config.bytes_per_pixel,
-            x_pos: BORDER_PADDING,
-            y_pos: BORDER_PADDING,
+            x_pos:   BORDER_PADDING,
+            y_pos:   BORDER_PADDING,
             fg_color: COLOR_MIKU,
-            is_bgr: config.is_bgr,
+            is_bgr:   config.is_bgr,
         }
     }
 
     pub fn clear(&mut self) {
-        self.framebuffer.fill(0);
-        self.x_pos = BORDER_PADDING;
-        self.y_pos = BORDER_PADDING;
+        for c in self.cells.iter_mut() { *c = Cell::blank(); }
+        let fill_end = (self.height * self.stride * self.bytes_per_pixel)
+            .min(self.framebuffer.len());
+        self.framebuffer[..fill_end].fill(0);
+        self.x_pos   = BORDER_PADDING;
+        self.y_pos   = BORDER_PADDING;
+        self.cur_col = 0;
+        self.cur_row = 0;
     }
 
     fn new_line(&mut self) {
-        self.y_pos += CHAR_HEIGHT + LINE_SPACING;
+        self.cur_col = 0;
+        self.cur_row += 1;
         self.x_pos = BORDER_PADDING;
-        if self.y_pos + CHAR_HEIGHT >= self.height {
+        self.y_pos += LINE_HEIGHT;
+        if self.cur_row >= self.rows {
             self.scroll_up();
         }
     }
 
     fn scroll_up(&mut self) {
-        let line_bytes =
-            (CHAR_HEIGHT + LINE_SPACING) * self.stride * self.bytes_per_pixel;
-        let total = self.height * self.stride * self.bytes_per_pixel;
-        if line_bytes >= total {
-            return;
+        let cols = self.cols;
+        let rows = self.rows;
+
+        for row in 0..rows - 1 {
+            for col in 0..cols {
+                self.cells[row * cols + col] = self.cells[(row + 1) * cols + col];
+            }
         }
-        self.framebuffer.copy_within(line_bytes..total, 0);
-        let clear_start = total - line_bytes;
-        if clear_start < self.framebuffer.len() {
-            let end = total.min(self.framebuffer.len());
-            self.framebuffer[clear_start..end].fill(0);
+        for col in 0..cols {
+            self.cells[(rows - 1) * cols + col] = Cell::blank();
         }
-        self.y_pos -= CHAR_HEIGHT + LINE_SPACING;
+
+        self.cur_row = rows - 1;
+        self.y_pos  = BORDER_PADDING + self.cur_row * LINE_HEIGHT;
+
+        let fill_end = (self.height * self.stride * self.bytes_per_pixel)
+            .min(self.framebuffer.len());
+        self.framebuffer[..fill_end].fill(0);
+
+        for row in 0..rows {
+            for col in 0..cols {
+                let cell = self.cells[row * cols + col];
+                if cell.ch > b' ' {
+                    let px = BORDER_PADDING + col * CHAR_WIDTH;
+                    let py = BORDER_PADDING + row * LINE_HEIGHT;
+                    self.render_char_at(cell.ch as char, px, py, cell.r, cell.g, cell.b);
+                }
+            }
+        }
     }
 
     pub fn backspace(&mut self) {
         if self.x_pos > BORDER_PADDING {
             self.x_pos -= CHAR_WIDTH;
+            if self.cur_col > 0 { self.cur_col -= 1; }
             self.clear_char_at_cursor();
+            if self.cur_col < self.cols && self.cur_row < self.rows {
+                self.cells[self.cur_row * self.cols + self.cur_col] = Cell::blank();
+            }
         }
     }
 
     pub fn clear_char_at_cursor(&mut self) {
         for y in 0..CHAR_HEIGHT {
             for x in 0..CHAR_WIDTH {
-                self.write_pixel(self.x_pos + x, self.y_pos + y, 0, 0, 0);
+                self.write_pixel_direct(self.x_pos + x, self.y_pos + y, 0, 0, 0);
             }
         }
     }
@@ -225,36 +327,74 @@ impl Console {
             '\n' => self.new_line(),
             '\x08' => self.backspace(),
             ch => {
-                if let Some((glyph, _width)) = crate::font::get_glyph(ch) {
-                    if self.x_pos + CHAR_WIDTH >= self.width {
-                        self.new_line();
-                    }
-                    self.clear_char_at_cursor();
+                if self.x_pos + CHAR_WIDTH >= self.width {
+                    self.new_line();
+                }
+                self.clear_char_at_cursor();
+
+                if self.cur_col < self.cols && self.cur_row < self.rows {
+                    let [r, g, b] = self.fg_color;
+                    self.cells[self.cur_row * self.cols + self.cur_col] =
+                        Cell { ch: ch as u8, r, g, b };
+                }
+
+                if let Some((glyph, _)) = crate::font::get_glyph(ch) {
                     self.write_glyph(glyph);
                 } else if let Some(raster) = noto_sans_mono_bitmap::get_raster(
                     ch,
                     noto_sans_mono_bitmap::FontWeight::Regular,
                     noto_sans_mono_bitmap::RasterHeight::Size16,
                 ) {
-                    if self.x_pos + raster.width() >= self.width {
-                        self.new_line();
-                    }
-                    self.clear_char_at_cursor();
                     self.write_rendered_char(raster);
+                }
+
+                self.cur_col += 1;
+            }
+        }
+    }
+
+    fn render_char_at(&mut self, c: char, px: usize, py: usize, r: u8, g: u8, b: u8) {
+        if let Some((glyph, _)) = crate::font::get_glyph(c) {
+            for y in 0..CHAR_HEIGHT {
+                for x in 0..CHAR_WIDTH {
+                    let intensity = glyph[y * CHAR_WIDTH + x] as u16;
+                    if intensity > 0 {
+                        let pr = ((r as u16 * intensity) / 255) as u8;
+                        let pg = ((g as u16 * intensity) / 255) as u8;
+                        let pb = ((b as u16 * intensity) / 255) as u8;
+                        self.write_pixel_direct(px + x, py + y, pr, pg, pb);
+                    }
+                }
+            }
+        } else if let Some(raster) = noto_sans_mono_bitmap::get_raster(
+            c,
+            noto_sans_mono_bitmap::FontWeight::Regular,
+            noto_sans_mono_bitmap::RasterHeight::Size16,
+        ) {
+            for (y, row) in raster.raster().iter().enumerate() {
+                for (x, byte) in row.iter().enumerate() {
+                    if *byte > 0 {
+                        let intensity = *byte as u16;
+                        let pr = ((r as u16 * intensity) / 255) as u8;
+                        let pg = ((g as u16 * intensity) / 255) as u8;
+                        let pb = ((b as u16 * intensity) / 255) as u8;
+                        self.write_pixel_direct(px + x, py + y, pr, pg, pb);
+                    }
                 }
             }
         }
     }
 
     fn write_glyph(&mut self, glyph: &[u8; CHAR_WIDTH * CHAR_HEIGHT]) {
+        let [r, g, b] = self.fg_color;
         for y in 0..CHAR_HEIGHT {
             for x in 0..CHAR_WIDTH {
                 let intensity = glyph[y * CHAR_WIDTH + x] as u16;
                 if intensity > 0 {
-                    let r = ((self.fg_color[0] as u16 * intensity) / 255) as u8;
-                    let g = ((self.fg_color[1] as u16 * intensity) / 255) as u8;
-                    let b = ((self.fg_color[2] as u16 * intensity) / 255) as u8;
-                    self.write_pixel(self.x_pos + x, self.y_pos + y, r, g, b);
+                    let pr = ((r as u16 * intensity) / 255) as u8;
+                    let pg = ((g as u16 * intensity) / 255) as u8;
+                    let pb = ((b as u16 * intensity) / 255) as u8;
+                    self.write_pixel_direct(self.x_pos + x, self.y_pos + y, pr, pg, pb);
                 }
             }
         }
@@ -268,17 +408,18 @@ impl Console {
         }
         for x in 0..rw.max(CHAR_WIDTH) {
             for y in 0..CHAR_HEIGHT {
-                self.write_pixel(self.x_pos + x, self.y_pos + y, 0, 0, 0);
+                self.write_pixel_direct(self.x_pos + x, self.y_pos + y, 0, 0, 0);
             }
         }
+        let [r, g, b] = self.fg_color;
         for (y, row) in rendered_char.raster().iter().enumerate() {
             for (x, byte) in row.iter().enumerate() {
                 if *byte > 0 {
                     let intensity = *byte as u16;
-                    let r = ((self.fg_color[0] as u16 * intensity) / 255) as u8;
-                    let g = ((self.fg_color[1] as u16 * intensity) / 255) as u8;
-                    let b = ((self.fg_color[2] as u16 * intensity) / 255) as u8;
-                    self.write_pixel(self.x_pos + x, self.y_pos + y, r, g, b);
+                    let pr = ((r as u16 * intensity) / 255) as u8;
+                    let pg = ((g as u16 * intensity) / 255) as u8;
+                    let pb = ((b as u16 * intensity) / 255) as u8;
+                    self.write_pixel_direct(self.x_pos + x, self.y_pos + y, pr, pg, pb);
                 }
             }
         }
@@ -286,6 +427,11 @@ impl Console {
     }
 
     pub fn write_pixel(&mut self, x: usize, y: usize, r: u8, g: u8, b: u8) {
+        self.write_pixel_direct(x, y, r, g, b);
+    }
+
+    #[inline(always)]
+    pub fn write_pixel_direct(&mut self, x: usize, y: usize, r: u8, g: u8, b: u8) {
         if x >= self.width || y >= self.height {
             return;
         }
@@ -293,21 +439,14 @@ impl Console {
         if byte_offset + self.bytes_per_pixel > self.framebuffer.len() {
             return;
         }
-        let buffer = &mut self.framebuffer[byte_offset..];
+        let fb = &mut self.framebuffer[byte_offset..];
         if self.is_bgr {
-            buffer[0] = b;
-            buffer[1] = g;
-            buffer[2] = r;
-            if self.bytes_per_pixel >= 4 {
-                buffer[3] = 0xFF;
-            }
+            fb[0] = b; fb[1] = g; fb[2] = r;
         } else {
-            buffer[0] = r;
-            buffer[1] = g;
-            buffer[2] = b;
-            if self.bytes_per_pixel >= 4 {
-                buffer[3] = 0xFF;
-            }
+            fb[0] = r; fb[1] = g; fb[2] = b;
+        }
+        if self.bytes_per_pixel >= 4 {
+            fb[3] = 0xFF;
         }
     }
 }

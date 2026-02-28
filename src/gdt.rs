@@ -1,4 +1,5 @@
 use lazy_static::lazy_static;
+use x86_64::registers::model_specific::KernelGsBase;
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;
@@ -8,8 +9,16 @@ struct Stack8K([u8; 8192]);
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 
-static mut DOUBLE_FAULT_STACK: Stack8K = Stack8K([0; 8192]);
+static mut DOUBLE_FAULT_STACK:  Stack8K = Stack8K([0; 8192]);
 static mut KERNEL_SYSCALL_STACK: Stack8K = Stack8K([0; 8192]);
+
+#[repr(C)]
+pub struct PerCpu {
+    pub kernel_rsp: u64,
+    pub user_rsp:   u64,
+}
+
+static mut PER_CPU: PerCpu = PerCpu { kernel_rsp: 0, user_rsp: 0 };
 
 lazy_static! {
     static ref TSS: TaskStateSegment = {
@@ -62,6 +71,10 @@ pub fn init() {
         SS::set_reg(GDT.1.kernel_data);
         ES::set_reg(GDT.1.kernel_data);
         load_tss(GDT.1.tss);
+
+        let kernel_rsp = TSS.privilege_stack_table[0].as_u64();
+        PER_CPU.kernel_rsp = kernel_rsp;
+        KernelGsBase::write(VirtAddr::new(core::ptr::addr_of!(PER_CPU) as u64));
     }
 
     crate::serial_println!(
@@ -70,4 +83,12 @@ pub fn init() {
         GDT.1.user_code.0,
         GDT.1.user_data.0,
     );
+}
+
+pub fn set_kernel_stack(stack_top: u64) {
+    unsafe {
+        let tss_ptr = &*TSS as *const _ as *mut TaskStateSegment;
+        (*tss_ptr).privilege_stack_table[0] = VirtAddr::new(stack_top);
+        PER_CPU.kernel_rsp = stack_top;
+    }
 }

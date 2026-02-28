@@ -1,8 +1,8 @@
 use crate::commands;
 use crate::{console, cprint, cprintln, print, serial_println};
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
-use lazy_static::lazy_static;
 use pc_keyboard::DecodedKey;
+use lazy_static::lazy_static;
 use spin::Mutex;
 
 const MAX_PATH: usize = 64;
@@ -72,7 +72,7 @@ lazy_static! {
 
 pub fn init() {
     serial_println!("[shell] init");
-    cprintln!(57, 197, 187, "MikuOS v0.0.8");
+    cprintln!(57, 197, 187, "MikuOS v0.0.9");
     prompt();
 }
 
@@ -113,32 +113,38 @@ fn prompt() {
     cprint!(57, 197, 187, "{}", p);
     cprint!(255, 255, 255, " $ ");
     drop(s);
+
     let mut sh = SHELL.lock();
     sh.prompt_end_x = console::get_x();
-    drop(sh);
-    draw_shell_cursor();
+    if sh.len > 0 {
+        redraw_input(&sh);
+    }
+    draw_cursor_inner(&sh);
 }
 
 fn cursor_x_pos(sh: &Shell) -> usize {
     sh.prompt_end_x + sh.cursor * console::CHAR_WIDTH
 }
 
+fn draw_cursor_inner(sh: &Shell) {
+    let x = cursor_x_pos(sh);
+    console::draw_cursor(x);
+}
+
 fn draw_shell_cursor() {
     let sh = SHELL.lock();
-    let x = cursor_x_pos(&sh);
-    drop(sh);
-    console::draw_cursor(x);
+    draw_cursor_inner(&sh);
 }
 
 fn redraw_input(sh: &Shell) {
     let start_x = sh.prompt_end_x;
-    console::clear_from_x(start_x, sh.len + 2);
+    console::clear_from_x(start_x, MAX_CMD + 2);
     console::set_x(start_x);
     for i in 0..sh.len {
         let c = sh.buf[i] as char;
         print!("{}", c);
     }
-    console::set_x(start_x + sh.len * console::CHAR_WIDTH);
+    console::set_x(start_x + sh.cursor * console::CHAR_WIDTH);
 }
 
 pub fn handle_keypress(key: DecodedKey) {
@@ -154,6 +160,7 @@ pub fn handle_keypress(key: DecodedKey) {
                     tmp[..cl].copy_from_slice(&sh.buf[..cl]);
 
                     let idx = sh.history_count % MAX_HISTORY;
+                    sh.history[idx].buf = [0; MAX_CMD];
                     sh.history[idx].buf[..cl].copy_from_slice(&tmp[..cl]);
                     sh.history[idx].len = cl;
                     sh.history_count += 1;
@@ -165,6 +172,7 @@ pub fn handle_keypress(key: DecodedKey) {
                     }
                 }
 
+                sh.buf = [0; MAX_CMD];
                 sh.len = 0;
                 sh.cursor = 0;
                 sh.browsing = false;
@@ -185,6 +193,8 @@ pub fn handle_keypress(key: DecodedKey) {
                     for i in pos..sh.len - 1 {
                         sh.buf[i] = sh.buf[i + 1];
                     }
+                    let last = sh.len - 1;
+                    sh.buf[last] = 0;
                     sh.len -= 1;
                     sh.cursor -= 1;
                     redraw_input(&sh);
@@ -255,6 +265,8 @@ pub fn handle_keypress(key: DecodedKey) {
                         for i in pos..sh.len - 1 {
                             sh.buf[i] = sh.buf[i + 1];
                         }
+                        let last = sh.len - 1;
+                        sh.buf[last] = 0;
                         sh.len -= 1;
                         redraw_input(&sh);
                         draw_cursor_inner(&sh);
@@ -269,6 +281,7 @@ pub fn handle_keypress(key: DecodedKey) {
                         let len = sh.len;
                         let mut tmp = [0u8; MAX_CMD];
                         tmp[..len].copy_from_slice(&sh.buf[..len]);
+                        sh.saved_buf = [0; MAX_CMD];
                         sh.saved_buf[..len].copy_from_slice(&tmp[..len]);
                         sh.saved_len = len;
                         sh.browsing = true;
@@ -288,6 +301,7 @@ pub fn handle_keypress(key: DecodedKey) {
                             let hlen = sh.history[idx].len;
                             let mut tmp = [0u8; MAX_CMD];
                             tmp[..hlen].copy_from_slice(&sh.history[idx].buf[..hlen]);
+                            sh.buf = [0; MAX_CMD];
                             sh.buf[..hlen].copy_from_slice(&tmp[..hlen]);
                             sh.len = hlen;
                             sh.cursor = hlen;
@@ -309,6 +323,7 @@ pub fn handle_keypress(key: DecodedKey) {
                         let hlen = sh.history[idx].len;
                         let mut tmp = [0u8; MAX_CMD];
                         tmp[..hlen].copy_from_slice(&sh.history[idx].buf[..hlen]);
+                        sh.buf = [0; MAX_CMD];
                         sh.buf[..hlen].copy_from_slice(&tmp[..hlen]);
                         sh.len = hlen;
                         sh.cursor = hlen;
@@ -317,6 +332,7 @@ pub fn handle_keypress(key: DecodedKey) {
                         let slen = sh.saved_len;
                         let mut tmp = [0u8; MAX_CMD];
                         tmp[..slen].copy_from_slice(&sh.saved_buf[..slen]);
+                        sh.buf = [0; MAX_CMD];
                         sh.buf[..slen].copy_from_slice(&tmp[..slen]);
                         sh.len = slen;
                         sh.cursor = slen;
@@ -332,21 +348,16 @@ pub fn handle_keypress(key: DecodedKey) {
     }
 }
 
-fn draw_cursor_inner(sh: &Shell) {
-    let x = cursor_x_pos(sh);
-    console::draw_cursor(x);
-}
-
 fn erase_cursor_inner(sh: &Shell) {
     let x = cursor_x_pos(sh);
     console::erase_cursor(x);
-    let start_x = sh.prompt_end_x;
-    console::set_x(start_x + sh.cursor * console::CHAR_WIDTH);
     if sh.cursor < sh.len {
+        let start_x = sh.prompt_end_x;
+        console::set_x(start_x + sh.cursor * console::CHAR_WIDTH);
         let c = sh.buf[sh.cursor] as char;
         print!("{}", c);
+        console::set_x(start_x + sh.cursor * console::CHAR_WIDTH);
     }
-    console::set_x(start_x + sh.cursor * console::CHAR_WIDTH);
 }
 
 pub fn update_path(s: &mut Session, arg: &str) {
@@ -406,6 +417,61 @@ fn append_component(s: &mut Session, name: &str) {
         if s.plen < MAX_PATH {
             s.path[s.plen] = b;
             s.plen += 1;
+        }
+    }
+}
+
+pub fn kbd_thread() -> ! {
+    use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
+
+    let mut keyboard = Keyboard::new(
+        ScancodeSet1::new(),
+        layouts::Us104Key,
+        HandleControl::MapLettersToUnicode,
+    );
+
+    crate::serial_println!("[kbd] thread started");
+
+    loop {
+        if !crate::boot::is_done() {
+            crate::scheduler::sleep(1);
+            continue;
+        }
+
+        match crate::stdin::pop() {
+            Some(scancode) => {
+                if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
+                    if let Some(key) = keyboard.process_keyevent(key_event) {
+                        match key {
+                            DecodedKey::Unicode('\u{0003}') => {
+                                crate::net::CTRL_C
+                                    .store(true, core::sync::atomic::Ordering::SeqCst);
+                                crate::println!("^C");
+                            }
+                            other => handle_keypress(other),
+                        }
+                    }
+                }
+            }
+            None => {
+                crate::scheduler::sleep(1);
+            }
+        }
+    }
+}
+
+pub fn shell_thread() -> ! {
+    crate::serial_println!("[shell] thread started");
+    loop {
+        if !crate::boot::is_done() {
+            crate::scheduler::sleep(1);
+            continue;
+        }
+
+        if CMD_READY.load(core::sync::atomic::Ordering::SeqCst) {
+            process_pending();
+        } else {
+            crate::scheduler::sleep(1);
         }
     }
 }

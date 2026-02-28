@@ -12,15 +12,15 @@ impl DiskReader {
     }
 
     pub fn read_sector(&mut self, lba: u32, buf: &mut [u8; 512]) -> Result<(), FsError> {
-        self.drive
-            .read_sector(lba, buf)
-            .map_err(|_| FsError::IoError)
+        self.drive.read_sector(lba, buf).map_err(|_| FsError::IoError)
     }
 
     pub fn write_sector(&mut self, lba: u32, buf: &[u8; 512]) -> Result<(), FsError> {
-        self.drive
-            .write_sector(lba, buf)
-            .map_err(|_| FsError::IoError)
+        self.drive.write_sector(lba, buf).map_err(|_| FsError::IoError)
+    }
+
+    pub fn flush_drive(&mut self) {
+        let _ = self.drive.flush();
     }
 
     pub fn read_superblock(&mut self) -> Result<Superblock, FsError> {

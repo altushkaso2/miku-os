@@ -1,18 +1,14 @@
 #[macro_export]
 macro_rules! cprint {
     ($r:expr, $g:expr, $b:expr, $($arg:tt)*) => {{
-        $crate::console::set_color($r, $g, $b);
-        $crate::print!($($arg)*);
-        $crate::console::reset_color()
+        $crate::console::print_colored($r, $g, $b, format_args!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! cprintln {
     ($r:expr, $g:expr, $b:expr, $($arg:tt)*) => {{
-        $crate::console::set_color($r, $g, $b);
-        $crate::println!($($arg)*);
-        $crate::console::reset_color()
+        $crate::console::print_colored($r, $g, $b, format_args!("{}\n", format_args!($($arg)*)));
     }};
 }
 

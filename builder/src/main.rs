@@ -242,18 +242,17 @@ fn create_efi_image(iso_root: &Path, efi_img: &Path) {
     }
 }
 
-fn create_ext2_disk(root: &Path) {
+fn create_blank_disk(root: &Path) {
     let disk_path = root.join("miku-os/disk.img");
     if !disk_path.exists() {
-        println!("[*] Creating ext2 disk image");
+        println!("[*] Creating blank disk image (16 MB)");
         run("dd", &[
             "if=/dev/zero",
             &format!("of={}", disk_path.display()),
             "bs=1M",
             "count=16",
         ]);
-        run("mkfs.ext2", &["-F", disk_path.to_str().unwrap()]);
-        println!("[OK] ext2 disk: {}", disk_path.display());
+        println!("[OK] blank disk: {}", disk_path.display());
     }
 }
 
@@ -272,7 +271,7 @@ fn main() {
 
     create_iso(&root);
 
-    create_ext2_disk(&root);
+    create_blank_disk(&root);
 
     if ask_user("\nLaunch QEMU? [y/N]: ", 10) {
         let iso_path = root.join("miku-os/miku-os.iso");
@@ -282,7 +281,9 @@ fn main() {
             "-cdrom".to_string(),
             iso_path.to_str().unwrap().to_string(),
             "-drive".to_string(),
-            format!("format=raw,file={},if=ide,index=1", disk_path.display()),
+            format!("file={},format=raw,if=none,id=disk0,cache=writeback", disk_path.display()),
+            "-device".to_string(),
+            "ide-hd,drive=disk0,bus=ide.0,unit=1,rotation_rate=1".to_string(),
             "-serial".to_string(),
             "stdio".to_string(),
             "-display".to_string(),
