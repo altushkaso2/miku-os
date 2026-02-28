@@ -28,7 +28,7 @@ fn resolve_parent_and_name(
     Ok((parent_ino, name_static))
 }
 
-pub fn cmd_ext3_mount(_args: &str) {.
+pub fn cmd_ext3_mount(_args: &str) {
     crate::commands::ext2_cmds::cmd_ext2_mount(_args);
 
     if !is_ext2_ready() {
