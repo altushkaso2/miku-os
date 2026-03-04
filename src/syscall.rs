@@ -1,25 +1,20 @@
 use x86_64::registers::model_specific::{Efer, EferFlags, LStar, Star, SFMask};
 use x86_64::registers::rflags::RFlags;
 use x86_64::VirtAddr;
-
 use crate::gdt;
 
 pub fn init() {
     unsafe {
         Efer::update(|f| *f |= EferFlags::SYSTEM_CALL_EXTENSIONS);
     }
-
     Star::write(
         gdt::user_code_selector(),
         gdt::user_data_selector(),
         gdt::kernel_code_selector(),
         gdt::kernel_data_selector(),
     ).unwrap();
-
     LStar::write(VirtAddr::new(syscall_handler as *const () as u64));
-
     SFMask::write(RFlags::INTERRUPT_FLAG);
-
     crate::serial_println!(
         "[syscall] syscall/sysret ready, handler={:#x}",
         syscall_handler as *const () as u64
@@ -30,10 +25,8 @@ pub fn init() {
 unsafe extern "C" fn syscall_handler() {
     core::arch::naked_asm!(
         "swapgs",
-
         "mov gs:[8], rsp",
         "mov rsp, gs:[0]",
-
         "push rcx",
         "push r11",
         "push rbp",
@@ -42,13 +35,11 @@ unsafe extern "C" fn syscall_handler() {
         "push r13",
         "push r14",
         "push r15",
-
         "mov rdi, rax",
         "mov rsi, rbx",
         "mov rdx, rcx",
         "mov rcx, r10",
         "call {handler}",
-
         "pop r15",
         "pop r14",
         "pop r13",
@@ -57,7 +48,6 @@ unsafe extern "C" fn syscall_handler() {
         "pop rbp",
         "pop r11",
         "pop rcx",
-
         "mov rsp, gs:[8]",
         "swapgs",
         "sysretq",
@@ -98,15 +88,8 @@ fn sys_read(_fd: u64, _buf: u64, _len: u64) -> u64 {
 }
 
 fn sys_exit() -> u64 {
-    {
-        let mut sched = crate::scheduler::SCHEDULER.lock();
-        if let Some(curr) = sched.current {
-            if let Some(p) = sched.procs.get_mut(&curr) {
-                p.state = crate::process::ProcessState::Dead;
-            }
-        }
-    }
-    crate::scheduler::schedule(crate::interrupts::get_tick());
+    crate::scheduler::kill(crate::scheduler::current_pid());
+    crate::scheduler::yield_now();
     0
 }
 

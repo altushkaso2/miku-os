@@ -1,7 +1,5 @@
 use super::params::{FsType, MkfsParams};
 
-pub const BLOCKS_PER_GROUP: u32 = 8192;
-
 pub struct FsLayout {
     pub fs_type:            FsType,
     pub block_size:         u32,
@@ -60,7 +58,7 @@ impl FsLayout {
         let gdt_block    = first_data_block + 1;
         let gdt_blocks   = 1u32;
 
-        let blocks_per_group = BLOCKS_PER_GROUP;
+        let blocks_per_group = block_size * 8;
 
         let (inodes_per_group, inode_table_blocks) = {
             let target = blocks_per_group / 4;

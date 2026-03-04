@@ -22,13 +22,14 @@ impl FsType {
 }
 
 pub struct MkfsParams {
-    pub fs_type: FsType,
-    pub drive_index: usize,
-    pub total_sectors: u32,
-    pub block_size: u32,
-    pub inode_size: u32,
+    pub fs_type:        FsType,
+    pub drive_index:    usize,
+    pub total_sectors:  u32,
+    pub start_lba:      u32,
+    pub block_size:     u32,
+    pub inode_size:     u32,
     pub journal_blocks: u32,
-    pub label: [u8; 16],
+    pub label:          [u8; 16],
 }
 
 impl MkfsParams {
@@ -41,7 +42,8 @@ impl MkfsParams {
         Self {
             fs_type,
             drive_index,
-            total_sectors: 0,
+            total_sectors:  0,
+            start_lba:      0,
             block_size,
             inode_size,
             journal_blocks,

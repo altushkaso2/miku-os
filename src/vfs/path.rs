@@ -137,9 +137,24 @@ impl PathWalker {
         match trimmed.rfind('/') {
             Some(pos) => {
                 let dir = if pos == 0 { "/" } else { &trimmed[..pos] };
-                (&dir, &trimmed[pos + 1..])
+                (dir, &trimmed[pos + 1..])
             }
             None => (".", trimmed),
         }
+    }
+}
+
+pub fn split_parent_name(path: &str) -> (&str, &str) {
+    let trimmed = path.trim_start_matches('/').trim_end_matches('/');
+    if trimmed.is_empty() {
+        return ("/", "");
+    }
+    match trimmed.rfind('/') {
+        Some(pos) => {
+            let parent = &trimmed[..pos];
+            let name = &trimmed[pos + 1..];
+            if parent.is_empty() { ("/", name) } else { (parent, name) }
+        }
+        None => ("/", trimmed),
     }
 }

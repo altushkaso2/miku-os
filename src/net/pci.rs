@@ -66,9 +66,11 @@ impl PciDevice {
         if bar & 1 == 0 && bar != 0 {
             let bar_type = (bar >> 1) & 3;
             if bar_type == 2 && idx + 1 < 6 {
-                Some(((bar & !0xF) as u64) | ((self.bars[idx + 1] as u64) << 32))
+                let lower = (bar & 0xFFFFFFF0) as u64;
+                let upper = (self.bars[idx + 1] as u64) << 32;
+                Some(lower | upper)
             } else {
-                Some((bar & !0xF) as u64)
+                Some((bar & 0xFFFFFFF0) as u64)
             }
         } else {
             None

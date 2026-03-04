@@ -23,7 +23,6 @@ fn parse_drive(s: &str) -> Option<usize> {
     }
 }
 
-
 pub fn cmd_mkfs_dry(drive_str: &str, type_str: &str) {
     let drive_idx = match parse_drive(drive_str) {
         Some(i) => i,
@@ -92,49 +91,85 @@ pub fn cmd_mkfs_ext3(args: &str) { do_mkfs(args, FsType::Ext3); }
 pub fn cmd_mkfs_ext4(args: &str) { do_mkfs(args, FsType::Ext4); }
 
 fn do_mkfs(args: &str, fs_type: FsType) {
-    let mut parts = args.split_whitespace();
-    let drive_str  = parts.next().unwrap_or("");
-    let sectors_str = parts.next().unwrap_or("0"); 
+    let mut parts       = args.split_whitespace();
+    let drive_str       = parts.next().unwrap_or("");
+    let second_str      = parts.next().unwrap_or("0");
 
     let drive_idx = match parse_drive(drive_str) {
         Some(i) => i,
         None => {
-            print_error!("  usage: mkfs.{} <drive 0-3> [sectors]", fs_type.name());
+            print_error!("  usage: mkfs.{} <drive 0-3> [partition|sectors]", fs_type.name());
             println!("    drive 0 = primary master");
             println!("    drive 1 = primary slave");
             println!("    drive 2 = secondary master");
             println!("    drive 3 = secondary slave");
+            println!("    example (whole disk):  mkfs.ext4 1");
+            println!("    example (partition 2): mkfs.ext4 1 2");
             return;
         }
     };
-
-    let manual_sectors: u32 = sectors_str.parse().unwrap_or(0);
 
     let drive = match drive_from_index(drive_idx) {
         Some(d) => d,
         None => { print_error!("  invalid drive index"); return; }
     };
 
-    cprintln!(255, 80, 80, "  !! warning: drive {} will be erased!!", drive_idx);
-    cprintln!(255, 80, 80, "  !! All data will be lost.  Proceeding in 0 seconds...");
-    println!();
-
     let mut params = MkfsParams::new(fs_type, drive_idx);
-    if manual_sectors > 0 {
-        params.total_sectors = manual_sectors;
+
+    let second_val: u32 = second_str.parse().unwrap_or(0);
+
+    if second_val >= 1 && second_val <= 128 {
+        let part_num    = second_val as usize;
+        let mut probe   = match drive_from_index(drive_idx) {
+            Some(d) => d,
+            None    => { print_error!("  invalid drive"); return; }
+        };
+        match crate::gpt::gpt_read(&mut probe) {
+            Ok(tbl) => {
+                let entry = &tbl.entries[part_num - 1];
+                if !entry.is_used() {
+                    print_error!("  partition {} does not exist", part_num);
+                    return;
+                }
+                if entry.is_swap() {
+                    print_error!("  partition {} is swap type - use mkswap instead", part_num);
+                    return;
+                }
+                params.start_lba     = entry.start_lba as u32;
+                params.total_sectors = entry.size_sectors() as u32;
+                cprintln!(255, 80, 80,
+                    "  !! warning: partition {} on drive {} will be erased!!",
+                    part_num, drive_idx
+                );
+                cprintln!(128, 222, 217,
+                    "  start_lba={} sectors={}",
+                    params.start_lba, params.total_sectors
+                );
+            }
+            Err(_) => {
+                print_error!("  could not read GPT on drive {} - treating as manual sectors", drive_idx);
+                params.total_sectors = second_val;
+            }
+        }
+    } else if second_val > 128 {
+        params.total_sectors = second_val;
+        cprintln!(255, 80, 80, "  !! warning: drive {} will be erased (manual {} sectors)!!", drive_idx, second_val);
+    } else {
+        cprintln!(255, 80, 80, "  !! warning: drive {} will be fully erased!!", drive_idx);
     }
 
+    println!();
     cprintln!(57, 197, 187, "  mkfs.{} on drive {}...", fs_type.name(), drive_idx);
 
     match mkfs(drive, &params) {
         Ok(report) => {
             println!();
             print_success!("  {} filesystem created successfully", report.fs_type);
-            println!("  Block size:    {} bytes", report.block_size);
-            println!("  Inode size:    {} bytes", report.inode_size);
-            println!("  Total blocks:  {}", report.total_blocks);
-            println!("  Total inodes:  {}", report.total_inodes);
-            println!("  Groups:        {}", report.group_count);
+            println!("  Block size:    {} bytes",  report.block_size);
+            println!("  Inode size:    {} bytes",  report.inode_size);
+            println!("  Total blocks:  {}",        report.total_blocks);
+            println!("  Total inodes:  {}",        report.total_inodes);
+            println!("  Groups:        {}",        report.group_count);
             if report.journal_blocks > 0 {
                 println!("  Journal:       {} blocks ({} KB)",
                     report.journal_blocks,
@@ -145,17 +180,18 @@ fn do_mkfs(args: &str, fs_type: FsType) {
                 report.free_blocks * report.block_size / (1024 * 1024));
             println!("  Free inodes:   {}", report.free_inodes);
             println!();
-            cprintln!(128, 222, 217, "  Now mount with: {}mount", report.fs_type);
+            if params.start_lba > 0 {
+                cprintln!(128, 222, 217,
+                    "  Mount with: {}mount {} (partition)",
+                    report.fs_type, drive_idx
+                );
+            } else {
+                cprintln!(128, 222, 217, "  Mount with: {}mount", report.fs_type);
+            }
         }
-        Err(MkfsError::DiskTooSmall) => {
-            print_error!("  error: disk too small for {}", fs_type.name());
-        }
-        Err(MkfsError::InvalidParams(msg)) => {
-            print_error!("  error: invalid params: {}", msg);
-        }
-        Err(MkfsError::TooManyGroups) => {
-            print_error!("  error: too many block groups (max 32)");
-        }
+        Err(MkfsError::DiskTooSmall)        => print_error!("  error: disk too small for {}", fs_type.name()),
+        Err(MkfsError::InvalidParams(msg))  => print_error!("  error: invalid params: {}", msg),
+        Err(MkfsError::TooManyGroups)       => print_error!("  error: too many block groups (max 32)"),
         Err(MkfsError::Io(e)) => {
             print_error!("  I/O error during format: {:?}", e);
             print_error!("  The disk may be in an inconsistent state.");
@@ -167,7 +203,7 @@ fn do_mkfs(args: &str, fs_type: FsType) {
 fn probe_sectors(drive: &mut AtaDrive) -> u32 {
     let mut buf = [0u8; 512];
     let mut lo: u32 = 2048;
-    let mut hi: u32 = 1_048_576;
+    let mut hi: u32 = u32::MAX / 2;
 
     while hi > lo && drive.read_sector(hi - 1, &mut buf).is_err() {
         hi /= 2;

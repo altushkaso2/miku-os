@@ -29,12 +29,13 @@ pub struct MkfsReport {
 }
 
 struct Writer {
-    drive: AtaDrive,
+    drive:     AtaDrive,
+    start_lba: u32,
 }
 
 impl Writer {
     fn write_sector(&mut self, lba: u32, buf: &[u8; 512]) -> Result<(), MkfsError> {
-        self.drive.write_sector(lba, buf).map_err(MkfsError::Io)
+        self.drive.write_sector(self.start_lba + lba, buf).map_err(MkfsError::Io)
     }
 
     fn zero_sector(&mut self, lba: u32) -> Result<(), MkfsError> {
@@ -50,7 +51,7 @@ impl Writer {
     ) -> Result<(), MkfsError> {
         if block >= total_blocks {
             crate::serial_println!(
-                "[mkfs] SKIP write_block {} (>= total_blocks {})", block, total_blocks
+                "[mkfs] skip write_block {} (>= total_blocks {})", block, total_blocks
             );
             return Ok(());
         }
@@ -79,16 +80,14 @@ impl Writer {
 
     fn probe_sectors(&mut self) -> u32 {
         let mut buf = [0u8; 512];
-
         match self.drive.read_sector(0, &mut buf) {
             Err(crate::ata::AtaError::NoDevice)  => return 0,
             Err(crate::ata::AtaError::Timeout)   => return 0,
             Err(_) => return 0,
             Ok(_)  => {}
         }
-
         let mut lo: u32 = 1;
-        let mut hi: u32 = 1_048_576;
+        let mut hi: u32 = u32::MAX / 2;
         while hi > lo && self.drive.read_sector(hi - 1, &mut buf).is_err() {
             hi /= 2;
             if hi == 0 { return lo; }
@@ -123,13 +122,12 @@ fn make_uuid(seed: u32) -> [u8; 16] {
 
 fn bitmap_mark_used_range(buf: &mut [u8], last_bit: u32) {
     let full_bytes = (last_bit / 8) as usize;
-    for i in 0..=full_bytes.min(buf.len().saturating_sub(1)) {
-        buf[i] = 0xFF;
+    for i in 0..full_bytes {
+        if i < buf.len() { buf[i] = 0xFF; }
     }
-
     let rem = last_bit % 8;
-    if (full_bytes as u32) < last_bit / 8 + 1 && full_bytes < buf.len() {
-        buf[full_bytes] = (1u16 << (rem + 1)).saturating_sub(1) as u8;
+    if rem > 0 && full_bytes < buf.len() {
+        buf[full_bytes] = (1u16 << rem).saturating_sub(1) as u8;
     }
 }
 
@@ -152,7 +150,6 @@ fn bitmap_mark_unused_tail(buf: &mut [u8], first_invalid: u32, block_size: u32) 
     }
 }
 
-
 pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsError> {
     if params.block_size != 1024 && params.block_size != 4096 {
         return Err(MkfsError::InvalidParams("block_size must be 1024 or 4096"));
@@ -169,14 +166,14 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
         return Err(MkfsError::InvalidParams("journal_blocks must be >= 16"));
     }
 
-    let mut w = Writer { drive };
+    let mut w = Writer { drive, start_lba: params.start_lba };
 
     let total_sectors = if params.total_sectors > 0 {
         params.total_sectors
     } else {
         let s = w.probe_sectors();
         crate::serial_println!("[mkfs] probed {} sectors ({} MB)", s, s / 2048);
-        s
+        s.saturating_sub(params.start_lba)
     };
 
     let min_sectors = (params.block_size / 512) * 64;
@@ -184,7 +181,7 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
         return Err(MkfsError::DiskTooSmall);
     }
 
-    crate::serial_println!("[mkfs] step 1: zeroing old SB at LBA 2-3");
+    crate::serial_println!("[mkfs] step 1: zeroing old SB at LBA 2-3 (base={})", params.start_lba);
     w.zero_sector(2)?;
     w.zero_sector(3)?;
     w.drive.flush().map_err(MkfsError::Io)?;
@@ -194,8 +191,8 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
         return Err(MkfsError::DiskTooSmall);
     }
 
-    let bs       = lay.block_size as usize;
-    let tb       = lay.total_blocks;
+    let bs = lay.block_size as usize;
+    let tb = lay.total_blocks;
 
     crate::serial_println!(
         "[mkfs] step 2: {} grps, {} total blks, journal={} blks",
@@ -222,12 +219,13 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
         let first = root_blk + 1;
         let mut last_plus_one = first + lay.journal_blocks;
         if lay.journal_blocks > 12 {
-            last_plus_one += 1;         }
+            last_plus_one += 1;
+        }
         (first, last_plus_one)
     } else {
         (root_blk + 1, root_blk + 1)
     };
-    let lf_blk = j_last_plus_one; 
+    let lf_blk = j_last_plus_one;
 
     for g in 0..lay.group_count as usize {
         let gl = &lay.groups[g];
@@ -237,8 +235,8 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
         bitmap_set_range(&mut bb, 0, overhead.saturating_sub(1));
 
         if g == 0 {
-            let local_root    = root_blk - gl.start_block;
-            let local_lf      = lf_blk  - gl.start_block;
+            let local_root = root_blk - gl.start_block;
+            let local_lf   = lf_blk  - gl.start_block;
             bitmap_set_range(&mut bb, local_root, local_lf.min(lay.blocks_per_group - 1));
         }
 
@@ -275,9 +273,7 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
         wu16(&mut dir, off3 + 4, (bs - off3) as u16);
         dir[off3 + 6] = 10; dir[off3 + 7] = FT_DIR;
         dir[off3 + 8..off3 + 18].copy_from_slice(b"lost+found");
-
         w.write_block(root_blk, &dir[..bs], lay.block_size, tb)?;
-
         let raw = build_dir_inode(EXT2_ROOT_INO, 3, root_blk, &lay, params.fs_type, now);
         write_raw_inode(&mut w, &lay, EXT2_ROOT_INO, &raw, tb)?;
     }
@@ -305,14 +301,14 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
         w.write_block(j_first, &jsb[..bs], lay.block_size, tb)?;
 
         let mut raw = [0u8; 256];
-        let j_size      = jblks * lay.block_size;
-        let j_blks_val  = jblks * (lay.block_size / 512);
+        let j_size     = jblks * lay.block_size;
+        let j_blks_val = jblks * (lay.block_size / 512);
         wu16(&mut raw, 0,  S_IFREG | 0o600);
         wu32(&mut raw, 4,  j_size);
         wu32(&mut raw, 8,  now); wu32(&mut raw, 12, now); wu32(&mut raw, 16, now);
         wu16(&mut raw, 26, 1);
         wu32(&mut raw, 28, j_blks_val);
-        wu32(&mut raw, 32, 0); 
+        wu32(&mut raw, 32, 0);
 
         let direct = jblks.min(12) as usize;
         for i in 0..direct {
@@ -327,7 +323,6 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
             w.write_block(ind_blk, &ind[..bs], lay.block_size, tb)?;
             wu32(&mut raw, 40 + 12 * 4, ind_blk);
         }
-
         write_raw_inode(&mut w, &lay, EXT2_JOURNAL_INO, &raw, tb)?;
     }
 
@@ -341,15 +336,14 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
         wu16(&mut dir, 16, (bs - 12) as u16);
         dir[18] = 2; dir[19] = FT_DIR; dir[20] = b'.'; dir[21] = b'.';
         w.write_block(lf_blk, &dir[..bs], lay.block_size, tb)?;
-
         let raw = build_dir_inode(EXT2_FIRST_INO_OLD, 2, lf_blk, &lay, params.fs_type, now);
         write_raw_inode(&mut w, &lay, EXT2_FIRST_INO_OLD, &raw, tb)?;
     }
 
     crate::serial_println!("[mkfs] step 7: GDT");
     {
-        let gd_size  = 32usize;
-        let mut gdt  = [0u8; 4096];
+        let gd_size = 32usize;
+        let mut gdt = [0u8; 4096];
 
         let g0_extra_used = {
             let mut n = 1u32;
@@ -364,14 +358,12 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
         for g in 0..lay.group_count as usize {
             let gl  = &lay.groups[g];
             let off = g * gd_size;
-
             let free_blk = if g == 0 {
                 gl.free_blocks.saturating_sub(g0_extra_used)
             } else {
                 gl.free_blocks
             };
             let used_dirs: u16 = if g == 0 { 2 } else { 0 };
-
             wu32(&mut gdt, off + 0,  gl.block_bitmap);
             wu32(&mut gdt, off + 4,  gl.inode_bitmap);
             wu32(&mut gdt, off + 8,  gl.inode_table);
@@ -405,8 +397,8 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
         if lf_blk < tb { n += 1; }
         n
     };
-    let free_blocks  = lay.total_free_blocks().saturating_sub(g0_extra_used);
-    let free_inodes  = lay.total_free_inodes();
+    let free_blocks = lay.total_free_blocks().saturating_sub(g0_extra_used);
+    let free_inodes = lay.total_free_inodes();
 
     wu32(&mut sb,  0,  lay.total_inodes);
     wu32(&mut sb,  4,  lay.total_blocks);
@@ -486,8 +478,8 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
     w.drive.flush().map_err(MkfsError::Io)?;
 
     crate::serial_println!(
-        "[mkfs] done: {} blks {} ino {} grps jblks={}",
-        lay.total_blocks, lay.total_inodes, lay.group_count, lay.journal_blocks
+        "[mkfs] done: {} blks {} ino {} grps jblks={} start_lba={}",
+        lay.total_blocks, lay.total_inodes, lay.group_count, lay.journal_blocks, params.start_lba
     );
 
     Ok(MkfsReport {
@@ -536,15 +528,15 @@ fn build_dir_inode(
 }
 
 fn write_raw_inode(
-    w:       &mut Writer,
-    lay:     &FsLayout,
-    ino_num: u32,
-    raw:     &[u8; 256],
+    w:            &mut Writer,
+    lay:          &FsLayout,
+    ino_num:      u32,
+    raw:          &[u8; 256],
     total_blocks: u32,
 ) -> Result<(), MkfsError> {
-    let idx      = ino_num - 1;
-    let group    = (idx / lay.inodes_per_group) as usize;
-    let local    = idx % lay.inodes_per_group;
+    let idx   = ino_num - 1;
+    let group = (idx / lay.inodes_per_group) as usize;
+    let local = idx % lay.inodes_per_group;
 
     if group >= lay.group_count as usize { return Ok(()); }
 

@@ -40,6 +40,7 @@ pub fn init_vfs() -> Result<(), &'static str> {
             ProcessContext::root_context(),
         );
         core::ptr::write(core::ptr::addr_of_mut!((*ptr).ext2_mount_active), false);
+        core::ptr::write(core::ptr::addr_of_mut!((*ptr).vnode_free_hint), 1);
 
         let vfs = &mut *ptr;
         vfs.bootstrap();
@@ -62,20 +63,16 @@ pub fn with_vfs<F, R>(f: F) -> R
 where
     F: FnOnce(&mut MikuVFS) -> R,
 {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        let _guard = VFS_LOCK.lock();
-        f(get_vfs())
-    })
+    let _guard = VFS_LOCK.lock();
+    f(get_vfs())
 }
 
 pub fn with_vfs_ro<F, R>(f: F) -> R
 where
     F: FnOnce(&MikuVFS) -> R,
 {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        let _guard = VFS_LOCK.lock();
-        f(get_vfs())
-    })
+    let _guard = VFS_LOCK.lock();
+    f(get_vfs())
 }
 
 pub struct MikuVFS {
@@ -85,6 +82,7 @@ pub struct MikuVFS {
     pub fd_table: FdTable,
     pub ctx: ProcessContext,
     pub ext2_mount_active: bool,
+    pub(crate) vnode_free_hint: usize,
 }
 
 impl MikuVFS {
@@ -248,8 +246,16 @@ impl MikuVFS {
     }
 
     pub fn alloc_vnode(&mut self) -> VfsResult<usize> {
-        for i in 1..MAX_VNODES {
+        let hint = self.vnode_free_hint;
+        for i in hint..MAX_VNODES {
             if !self.nodes[i].active {
+                self.vnode_free_hint = i + 1;
+                return Ok(i);
+            }
+        }
+        for i in 1..hint {
+            if !self.nodes[i].active {
+                self.vnode_free_hint = i + 1;
                 return Ok(i);
             }
         }
@@ -324,11 +330,7 @@ impl MikuVFS {
         }
 
         let parent = self.nodes[link_id].parent as usize;
-        let start = if target_str.starts_with('/') {
-            0
-        } else {
-            parent
-        };
+        let start = if target_str.starts_with('/') { 0 } else { parent };
 
         let mut current = start;
         for component in target_str.split('/') {
@@ -415,17 +417,7 @@ impl MikuVFS {
                 symlink_len = l as u8;
             }
 
-            Ok((
-                child_ino,
-                kind,
-                perm,
-                size,
-                uid,
-                gid,
-                nlinks,
-                symlink_target,
-                symlink_len,
-            ))
+            Ok((child_ino, kind, perm, size, uid, gid, nlinks, symlink_target, symlink_len))
         });
 
         let info = match result {
@@ -461,10 +453,7 @@ impl MikuVFS {
             self.nodes[id].symlink_target.len = symlink_len;
         }
 
-        if !self.nodes[parent_vnode]
-            .children
-            .insert(name, id as InodeId)
-        {
+        if !self.nodes[parent_vnode].children.insert(name, id as InodeId) {
             self.nodes[id].active = false;
             return Err(VfsError::NoSpace);
         }
@@ -573,10 +562,7 @@ impl MikuVFS {
                 self.nodes[id].ext2_ino = ci.ino;
                 self.nodes[id].children_loaded = false;
 
-                if !self.nodes[dir_vnode]
-                    .children
-                    .insert(name_str, id as InodeId)
-                {
+                if !self.nodes[dir_vnode].children.insert(name_str, id as InodeId) {
                     self.nodes[id].active = false;
                 }
             }
@@ -1059,10 +1045,7 @@ impl MikuVFS {
         self.check_dir_write(pid)?;
         self.ensure_no_duplicate(pid, new_name)?;
 
-        if !self.nodes[pid]
-            .children
-            .insert(new_name, target_id as InodeId)
-        {
+        if !self.nodes[pid].children.insert(new_name, target_id as InodeId) {
             return Err(VfsError::NoSpace);
         }
 
@@ -1098,8 +1081,7 @@ impl MikuVFS {
                     return Err(VfsError::AlreadyExists);
                 }
                 self.check_access(id, flags)?;
-                if flags.has(OpenFlags::TRUNCATE) && flags.writable() && self.nodes[id].is_regular()
-                {
+                if flags.has(OpenFlags::TRUNCATE) && flags.writable() && self.nodes[id].is_regular() {
                     self.truncate_file(id);
                 }
                 id
@@ -1138,6 +1120,9 @@ impl MikuVFS {
                 crate::serial_println!("[vfs] deferred free vnode {}", vid);
                 self.free_file_pages(vid);
                 self.nodes[vid].active = false;
+                if vid < self.vnode_free_hint {
+                    self.vnode_free_hint = vid;
+                }
             }
         }
 
@@ -1495,6 +1480,9 @@ impl MikuVFS {
         if self.nodes[id].nlinks == 0 && self.nodes[id].refcount == 0 {
             self.free_file_pages(id);
             self.nodes[id].active = false;
+            if id < self.vnode_free_hint {
+                self.vnode_free_hint = id;
+            }
             crate::serial_println!("[vfs] freed vnode {}", id);
         } else {
             self.nodes[id].touch_ctime(ts);
@@ -1519,8 +1507,7 @@ impl MikuVFS {
 
         for cid in self.nodes[eff].children.find_by_hash(new_h) {
             let c = cid as usize;
-            if c < MAX_VNODES && self.nodes[c].active && self.nodes[c].name_eq(new_name) && c != id
-            {
+            if c < MAX_VNODES && self.nodes[c].active && self.nodes[c].name_eq(new_name) && c != id {
                 return Err(VfsError::AlreadyExists);
             }
         }
@@ -1544,9 +1531,7 @@ impl MikuVFS {
             };
 
             self.nodes[id].name = NameBuf::from_str(rollback_name);
-            let _ = self.nodes[pid]
-                .children
-                .insert(rollback_name, id as InodeId);
+            let _ = self.nodes[pid].children.insert(rollback_name, id as InodeId);
             return Err(VfsError::NoSpace);
         }
 

@@ -4,6 +4,7 @@ pub mod ext4_cmds;
 pub mod fs;
 pub mod system;
 pub mod mkfs_cmds;
+pub mod disk_cmds;
 
 use crate::{println, serial_println};
 
@@ -100,14 +101,33 @@ pub fn execute(input: &str) {
         "echo" => system::cmd_echo(rest),
         "history" => system::cmd_history(),
         "info" => system::cmd_info(),
+        "memmap" => system::cmd_memmap(),
         "help" => system::cmd_help(),
         "clear" => system::cmd_clear(),
         "heap" => system::cmd_heap(),
         "poweroff" | "shutdown" | "halt" => system::cmd_poweroff(),
         "reboot" | "restart" => system::cmd_reboot(),
+        "ps"       => system::cmd_ps(),
+        "top"      => system::cmd_top(),
+        "swaptest"  => system::cmd_swaptest(),
+        "nice"     => system::cmd_nice(a1, a2),
+        "affinity" => system::cmd_affinity(a1, a2),
+        "kill"     => {
+            if a1.is_empty() {
+                crate::println!("Usage: kill <pid>");
+            } else if let Ok(pid) = a1.parse::<u64>() {
+                crate::scheduler::kill(pid);
+                crate::cprintln!(100, 220, 150, "  killed pid={}", pid);
+            } else {
+                crate::print_error!("  invalid pid");
+            }
+        }
 
         "ext2mount" => ext2_cmds::cmd_ext2_mount(rest),
         "ext2ls" => ext2_cmds::cmd_ext2_ls(a1),
+        "fs.list"   => ext2_cmds::cmd_fs_list(),
+        "fs.select" => ext2_cmds::cmd_fs_select(rest),
+        "fs.umount" => ext2_cmds::cmd_fs_umount(rest),
         "ext2cat" => ext2_cmds::cmd_ext2_cat(a1),
         "ext2stat" => ext2_cmds::cmd_ext2_stat(a1),
         "ext2info" => ext2_cmds::cmd_ext2_info(),
@@ -295,6 +315,35 @@ pub fn execute(input: &str) {
             if a1.is_empty() || a2.is_empty() { println!("Usage: mkfs.dry <drive 0-3> <ext2|ext3|ext4>"); }
             else { mkfs_cmds::cmd_mkfs_dry(a1, a2); }
         }
+        "gpt"      => disk_cmds::cmd_gpt_show(a1),
+        "gpt.init" => disk_cmds::cmd_gpt_init(a1),
+        "gpt.add"  => disk_cmds::cmd_gpt_add(rest),
+        "gpt.del"  => {
+            if a1.is_empty() || a2.is_empty() {
+                println!("usage: gpt.del <drive> <partition>");
+            } else {
+                disk_cmds::cmd_gpt_del(a1, a2);
+            }
+        }
+        "mkswap"   => {
+            if a1.is_empty() || a2.is_empty() {
+                println!("usage: mkswap <drive> <partition>");
+            } else {
+                disk_cmds::cmd_mkswap(a1, a2);
+            }
+        }
+        "swapon"   => {
+            if a1.is_empty() || a2.is_empty() {
+                println!("usage: swapon <drive> <partition>");
+            } else {
+                disk_cmds::cmd_swapon(a1, a2);
+            }
+        }
+        "swapoff"   => disk_cmds::cmd_swapoff(),
+        "swapinfo"  => disk_cmds::cmd_swapinfo(),
+        "swapon.raw"  => disk_cmds::cmd_swapon_raw(rest),
+        "swapon.auto" => disk_cmds::cmd_swapon_auto(),
+        "mkswap.raw"  => disk_cmds::cmd_mkswap_raw(rest),
 
         "net" => {
             crate::net::poll();

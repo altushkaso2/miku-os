@@ -3,20 +3,25 @@ use super::FsError;
 use crate::ata::AtaDrive;
 
 pub struct DiskReader {
-    pub drive: AtaDrive,
+    pub drive:     AtaDrive,
+    pub start_lba: u32,
 }
 
 impl DiskReader {
     pub fn new(drive: AtaDrive) -> Self {
-        Self { drive }
+        Self { drive, start_lba: 0 }
+    }
+
+    pub fn new_partitioned(drive: AtaDrive, start_lba: u32) -> Self {
+        Self { drive, start_lba }
     }
 
     pub fn read_sector(&mut self, lba: u32, buf: &mut [u8; 512]) -> Result<(), FsError> {
-        self.drive.read_sector(lba, buf).map_err(|_| FsError::IoError)
+        self.drive.read_sector(self.start_lba + lba, buf).map_err(|_| FsError::IoError)
     }
 
     pub fn write_sector(&mut self, lba: u32, buf: &[u8; 512]) -> Result<(), FsError> {
-        self.drive.write_sector(lba, buf).map_err(|_| FsError::IoError)
+        self.drive.write_sector(self.start_lba + lba, buf).map_err(|_| FsError::IoError)
     }
 
     pub fn flush_drive(&mut self) {

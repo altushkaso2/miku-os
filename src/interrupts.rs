@@ -4,14 +4,14 @@ use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
-pub const PIC_1_OFFSET: u8 = 32;
-pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
+pub const PIC_1_OFFSET: u8  = 32;
+pub const PIC_2_OFFSET: u8  = PIC_1_OFFSET + 8;
+pub const PIT_HZ:       u32 = 250;
 
 pub static PICS: Mutex<ChainedPics> =
     Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 
 static TICK: AtomicU64 = AtomicU64::new(0);
-static NEED_SCHEDULE: AtomicBool = AtomicBool::new(false);
 
 pub static ATA_PRIMARY_IRQ:   AtomicBool = AtomicBool::new(false);
 pub static ATA_SECONDARY_IRQ: AtomicBool = AtomicBool::new(false);
@@ -20,10 +20,66 @@ pub fn get_tick() -> u64 {
     TICK.load(Ordering::Relaxed)
 }
 
-pub fn check_and_schedule() {
-    if NEED_SCHEDULE.swap(false, Ordering::AcqRel) {
-        crate::scheduler::schedule(get_tick());
+core::arch::global_asm!(
+    ".global _timer_isr_naked",
+    "_timer_isr_naked:",
+    "push r15",
+    "push r14",
+    "push r13",
+    "push r12",
+    "push r11",
+    "push r10",
+    "push r9",
+    "push r8",
+    "push rbp",
+    "push rdi",
+    "push rsi",
+    "push rdx",
+    "push rcx",
+    "push rbx",
+    "push rax",
+    "mov rdi, rsp",
+    "call timer_handler_inner",
+    "mov rsp, rax",
+    "pop rax",
+    "pop rbx",
+    "pop rcx",
+    "pop rdx",
+    "pop rsi",
+    "pop rdi",
+    "pop rbp",
+    "pop r8",
+    "pop r9",
+    "pop r10",
+    "pop r11",
+    "pop r12",
+    "pop r13",
+    "pop r14",
+    "pop r15",
+    "iretq",
+);
+
+extern "C" {
+    fn _timer_isr_naked();
+}
+
+#[no_mangle]
+unsafe extern "C" fn timer_handler_inner(old_rsp: u64) -> u64 {
+    crate::vfs::procfs::tick();
+    let tick = TICK.fetch_add(1, Ordering::Relaxed) + 1;
+
+    if tick % 250 == 0 {
+        crate::swap_map::age_all();
+        crate::swap_map::refill_emergency_pool_tick();
     }
+
+    PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
+
+    if !crate::boot::is_done() {
+        return old_rsp;
+    }
+
+    crate::scheduler::schedule_from_isr(old_rsp)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -36,8 +92,8 @@ pub enum InterruptIndex {
 }
 
 impl InterruptIndex {
-    fn as_u8(self) -> u8 { self as u8 }
-    fn as_usize(self) -> usize { usize::from(self.as_u8()) }
+    fn as_u8(self)    -> u8     { self as u8 }
+    fn as_usize(self) -> usize  { usize::from(self.as_u8()) }
 }
 
 lazy_static! {
@@ -51,7 +107,11 @@ lazy_static! {
         }
         idt.page_fault.set_handler_fn(page_fault_handler);
         idt.general_protection_fault.set_handler_fn(gpf_handler);
-        idt[InterruptIndex::Timer.as_usize()].set_handler_fn(timer_interrupt_handler);
+        unsafe {
+            let timer_fn: extern "x86-interrupt" fn(InterruptStackFrame) =
+                core::mem::transmute(_timer_isr_naked as *const ());
+            idt[InterruptIndex::Timer.as_usize()].set_handler_fn(timer_fn);
+        }
         idt[InterruptIndex::Keyboard.as_usize()].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptIndex::AtaIrq14.as_usize()].set_handler_fn(ata_irq14_handler);
         idt[InterruptIndex::AtaIrq15.as_usize()].set_handler_fn(ata_irq15_handler);
@@ -78,50 +138,33 @@ pub fn init_pics() {
     );
 }
 
-pub fn init_pit_1000hz() {
+pub fn init_pit() {
     const PIT_FREQUENCY: u32 = 1_193_182;
-    const TARGET_HZ: u32 = 1000;
-    const DIVISOR: u16 = (PIT_FREQUENCY / TARGET_HZ) as u16;
-
+    const DIVISOR: u16 = (PIT_FREQUENCY / PIT_HZ) as u16;
     unsafe {
         use x86_64::instructions::port::Port;
         Port::<u8>::new(0x43).write(0x36);
         Port::<u8>::new(0x40).write(DIVISOR as u8);
         Port::<u8>::new(0x40).write((DIVISOR >> 8) as u8);
     }
-    crate::serial_println!("[pit] 1000 Hz (divisor={})", DIVISOR);
+    crate::serial_println!("[pit] {} Hz (divisor={})", PIT_HZ, DIVISOR);
 }
 
-extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    crate::vfs::procfs::tick();
-    TICK.fetch_add(1, Ordering::Relaxed);
-    unsafe {
-        PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
-    }
-    NEED_SCHEDULE.store(true, Ordering::Release);
-}
-
-extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn keyboard_interrupt_handler(_: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
     let scancode: u8 = unsafe { Port::<u8>::new(0x60).read() };
     crate::stdin::push(scancode);
-    unsafe {
-        PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
-    }
+    unsafe { PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8()); }
 }
 
-extern "x86-interrupt" fn ata_irq14_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn ata_irq14_handler(_: InterruptStackFrame) {
     ATA_PRIMARY_IRQ.store(true, Ordering::Release);
-    unsafe {
-        PICS.lock().notify_end_of_interrupt(InterruptIndex::AtaIrq14.as_u8());
-    }
+    unsafe { PICS.lock().notify_end_of_interrupt(InterruptIndex::AtaIrq14.as_u8()); }
 }
 
-extern "x86-interrupt" fn ata_irq15_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn ata_irq15_handler(_: InterruptStackFrame) {
     ATA_SECONDARY_IRQ.store(true, Ordering::Release);
-    unsafe {
-        PICS.lock().notify_end_of_interrupt(InterruptIndex::AtaIrq15.as_u8());
-    }
+    unsafe { PICS.lock().notify_end_of_interrupt(InterruptIndex::AtaIrq15.as_u8()); }
 }
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
@@ -141,9 +184,80 @@ extern "x86-interrupt" fn page_fault_handler(
     error_code: x86_64::structures::idt::PageFaultErrorCode,
 ) {
     use x86_64::registers::control::Cr2;
-    let addr = Cr2::read();
+    use x86_64::registers::control::Cr3;
+
+    let fault_addr = Cr2::read().as_u64();
+    let page_addr  = fault_addr & !0xFFF;
+
+    let (cr3_frame, _) = Cr3::read();
+    let cr3 = cr3_frame.start_address().as_u64();
+
+    if let Some(pte_raw) = crate::vmm::read_pte_raw(cr3, page_addr) {
+        if crate::swap_map::is_swap_pte(pte_raw) {
+            let slot = crate::swap_map::slot_from_pte(pte_raw);
+
+            if let Some(new_phys) = crate::swap_map::alloc_for_swapin() {
+                let drive_idx = crate::swap::swap_drive_idx();
+                let mut drive = match drive_idx {
+                    0 => crate::ata::AtaDrive::primary(),
+                    1 => crate::ata::AtaDrive::primary_slave(),
+                    2 => crate::ata::AtaDrive::secondary(),
+                    _ => crate::ata::AtaDrive::secondary_slave(),
+                };
+
+                match crate::swap::swap_in_internal(slot, new_phys, &mut drive) {
+                    Ok(()) => {
+                        let aspace = crate::vmm::AddressSpace { cr3 };
+                        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+                            | x86_64::structures::paging::PageTableFlags::WRITABLE
+                            | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
+                        aspace.map_page(page_addr, new_phys, flags);
+                        core::mem::forget(aspace);
+
+                        crate::swap_map::track(new_phys, cr3, page_addr, false);
+
+                        crate::serial_println!(
+                            "[pf] swap-in ok: virt={:#x} slot={} -> phys={:#x}",
+                            page_addr, slot, new_phys
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        crate::serial_println!("[pf] swap-in failed: {:?}", e);
+                    }
+                }
+            } else {
+                crate::serial_println!("[pf] OOM: cannot get frame for swap-in virt={:#x}", page_addr);
+                if crate::swap_map::evict_one().is_some() {
+                    if let Some(f2) = crate::pmm::alloc_frame() {
+                        let drive_idx2 = crate::swap::swap_drive_idx();
+                        let mut drive2 = match drive_idx2 {
+                            0 => crate::ata::AtaDrive::primary(),
+                            1 => crate::ata::AtaDrive::primary_slave(),
+                            2 => crate::ata::AtaDrive::secondary(),
+                            _ => crate::ata::AtaDrive::secondary_slave(),
+                        };
+                        if crate::swap::swap_in_internal(slot, f2, &mut drive2).is_ok() {
+                            let aspace2 = crate::vmm::AddressSpace { cr3 };
+                            let flags2 = x86_64::structures::paging::PageTableFlags::PRESENT
+                                | x86_64::structures::paging::PageTableFlags::WRITABLE
+                                | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
+                            aspace2.map_page(page_addr, f2, flags2);
+                            core::mem::forget(aspace2);
+                            crate::swap_map::track(f2, cr3, page_addr, false);
+                            crate::serial_println!("[pf] swap-in ok on retry: virt={:#x}", page_addr);
+                            return;
+                        }
+                    }
+                }
+                crate::serial_println!("[pf] swap-in at page {:#x}: no free frame for swap-in", page_addr);
+            }
+        }
+    }
+
     crate::serial_println!(
-        "[page fault] addr={:?} code={:?}\n{:#?}", addr, error_code, stack_frame
+        "[page fault] FATAL addr={:#x} code={:?}\n{:#?}",
+        fault_addr, error_code, stack_frame
     );
     loop { x86_64::instructions::hlt(); }
 }

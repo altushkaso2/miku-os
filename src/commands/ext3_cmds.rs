@@ -3,19 +3,7 @@ use crate::miku_extfs::FsError;
 use crate::{cprint, cprintln, print_error, print_success, println};
 use crate::commands::ext2_cmds::{with_ext2_pub, is_ext2_ready};
 use crate::miku_extfs::ext2::write::TreeResult;
-
-fn split_parent_name(path: &str) -> (&str, &str) {
-    let trimmed = path.trim_start_matches('/').trim_end_matches('/');
-    if trimmed.is_empty() { return ("/", ""); }
-    match trimmed.rfind('/') {
-        Some(pos) => {
-            let parent = &trimmed[..pos];
-            let name = &trimmed[pos + 1..];
-            if parent.is_empty() { ("/", name) } else { (parent, name) }
-        }
-        None => ("/", trimmed),
-    }
-}
+use crate::vfs::path::split_parent_name;
 
 fn resolve_parent_and_name(
     fs: &mut crate::miku_extfs::MikuFS,
