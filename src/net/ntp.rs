@@ -64,7 +64,7 @@ fn is_leap(y: u32) -> bool {
 
 fn build_ntp_request(out: &mut [u8; 48]) {
     out.fill(0);
-    out[0] = 0b00_100_011; // 0x23
+    out[0] = 0b00_100_011;
 }
 
 fn parse_ntp_response(buf: &[u8]) -> Option<NtpResult> {

@@ -1,10 +1,10 @@
-pub const MAX_VNODES: usize = 64;
+pub const MAX_VNODES: usize = 256;
 pub const MAX_DENTRIES: usize = 128;
 pub const MAX_MOUNTS: usize = 8;
 pub const MAX_FDS: usize = 32;
 pub const MAX_OPEN_FILES: usize = 32;
-pub const MAX_DATA_PAGES: usize = 64;
-pub const MAX_CHILDREN: usize = 24;
+pub const MAX_DATA_PAGES: usize = 128;
+pub const MAX_CHILDREN: usize = 32;
 pub const MAX_XATTRS_PER_NODE: usize = 8;
 pub const MAX_LOCKS: usize = 16;
 pub const MAX_WATCHES: usize = 8;
@@ -244,34 +244,22 @@ impl FileMode {
             VNodeKind::Socket => b's',
             _ => b'-',
         };
-        if self.owner_read() {
-            out[1] = b'r';
-        }
-        if self.owner_write() {
-            out[2] = b'w';
-        }
+        if self.owner_read() { out[1] = b'r'; }
+        if self.owner_write() { out[2] = b'w'; }
         if self.owner_exec() {
             out[3] = if self.setuid() { b's' } else { b'x' };
         } else if self.setuid() {
             out[3] = b'S';
         }
-        if self.group_read() {
-            out[4] = b'r';
-        }
-        if self.group_write() {
-            out[5] = b'w';
-        }
+        if self.group_read() { out[4] = b'r'; }
+        if self.group_write() { out[5] = b'w'; }
         if self.group_exec() {
             out[6] = if self.setgid() { b's' } else { b'x' };
         } else if self.setgid() {
             out[6] = b'S';
         }
-        if self.other_read() {
-            out[7] = b'r';
-        }
-        if self.other_write() {
-            out[8] = b'w';
-        }
+        if self.other_read() { out[7] = b'r'; }
+        if self.other_write() { out[8] = b'w'; }
         if self.other_exec() {
             out[9] = if self.sticky() { b't' } else { b'x' };
         } else if self.sticky() {

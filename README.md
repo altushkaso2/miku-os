@@ -2,229 +2,351 @@
 
 # 💙 Miku OS
 
-**Экспериментальное ядро операционной системы на Rust**
+**Rustで開発された実験的なオペレーティングシステムカーネル**
 
-*Powered by Rust, and a couple of developers :D*
+*Rustと数人の開発者によって動いています :D*
 
-<img src="docs/miku.png" width="220" alt="Miku Logo">
+<img src="https://raw.githubusercontent.com/altushkaso2/miku-os/main/docs/miku.png" width="220" alt="Miku Logo">
 
 [![Language](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Architecture](https://img.shields.io/badge/arch-x86__64-blue.svg)]()
-[![Status](https://img.shields.io/badge/status-pre--release-yellow.svg)]()
+[![Status](https://img.shields.io/badge/status-release-green.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)]()
 
 </div>
 
 ---
 
-## О проекте
-
-**Miku OS** - UNIX-подобная операционная система, разрабатываемая с нуля в режиме `no_std`.  
-Без стандартной библиотеки (`libc`) - полный контроль над железом и архитектурой памяти.
-
-> Весь код написан на Rust. Ассемблер используется исключительно для загрузчика, syscall-обработчика и переключения контекста.
+> 🌐 **ドキュメント:** [🇷🇺 Русский](docs/Russian_README.md) | [🇬🇧 English](docs/English_README.md) | [🇯🇵 日本語](Japanese_README.md)
 
 ---
 
-## Технические характеристики
+## プロジェクトについて
 
-### Ядро
+**Miku OS** は `no_std` 環境でゼロから開発されたUNIX系オペレーティングシステムです。
+標準ライブラリ (`libc`) を一切使用せず、ハードウェアとメモリアーキテクチャを完全に制御します。
 
-| Компонент | Описание |
+> すべてのコードはRustで書かれています。アセンブラはブートローダー、syscallハンドラー、コンテキストスイッチの部分にのみ使用しています。
+
+---
+
+## 技術仕様
+
+### カーネル
+
+| コンポーネント | 説明 |
 |:--|:--|
-| **Архитектура** | x86_64, `#![no_std]`, `#![no_main]` |
-| **Bootloader** | Limine protocol, фреймбуфер 1280×800 (BGR) |
-| **Защита** | GDT + TSS + IST для double fault, ring 0 / ring 3 |
-| **Прерывания** | IDT - timer, keyboard, page fault, GPF, double fault |
-| **PIC** | PIC8259 (offset 32/40) |
-| **Куча** | 256 KB, linked-list allocator |
-| **Syscall** | SYSCALL/SYSRET через MSR, обработчик на naked asm |
+| **アーキテクチャ** | x86_64、`#![no_std]`、`#![no_main]` |
+| **ブートローダー** | Limineプロトコル、フレームバッファ 1280x800 (BGR) |
+| **保護機能** | GDT + TSS + IST (ダブルフォルト用)、ring 0 / ring 3 |
+| **割り込み** | IDT - タイマー、キーボード、ページフォルト、GPF、ダブルフォルト |
+| **PIC** | PIC8259 (オフセット 32/40) |
+| **ヒープ** | 256 KB、リンクリストアロケータ |
+| **Syscall** | MSR経由のSYSCALL/SYSRET、naked asmハンドラー |
 
 ---
 
-### Планировщик
-
-| Параметр | Значение |
-|:--|:--|
-| **Тип** | Round-robin, preemptive |
-| **Процессы** | До 16 одновременно |
-| **Переключение** | Каждые 20 тиков таймера (~200мс) |
-| **Контекст** | r15, r14, r13, r12, rbx, rbp, rip, rsp, rflags |
-| **Стек** | 16 KB на процесс |
-| **Состояния** | `Ready`, `Running`, `Dead` |
-
-Переключение контекста реализовано на naked asm - полное сохранение и восстановление регистров без участия компилятора.
-
----
-
-### Сетевой стек
-
-Полный сетевой стек реализован с нуля, без каких-либо сторонних библиотек.
+### メモリ管理
 
 <details>
-<summary><b>Драйверы сетевых карт</b></summary>
+<summary><b>物理メモリ (PMM)</b></summary>
 
-| Драйвер | Чипы |
+#### フレームアロケータ
+
+- **ビットマップアロケータ** - 最大4Mフレーム (16 GB RAM)、1ビット = 1フレーム 4KB
+- **free_hint** と **contiguous_hint** - 空きフレームと連続フレームの検索を高速化
+- **連続alloc** - 1回のリクエストでNフレームをまとめて確保
+- **リージョン** - Multiboot2メモリマップからRAM範囲を動的に登録
+
+#### エマージェンシープール
+
+ページフォルトハンドラー内のswap-in専用フレーム予備:
+
+| パラメータ | 値 |
 |:--|:--|
-| **Intel E1000** | 82540EM, 82545EM, 82574L, 82579LM, I217 |
+| **プールサイズ** | 64フレーム (256 KB) |
+| **用途** | ページフォルトハンドラー内のswap-inのみ |
+| **補充** | `refill_emergency_pool_tick()` 経由でTimer ISRが約250msごとに実行 |
+| **理由** | 通常のevict_one()はATA I/Oを呼び出すためフォルトハンドラー内では使用不可 |
+
+```
+alloc_frame()           - PMMからの通常alloc
+alloc_frame_emergency() - エマージェンシープールのみ (フォルトハンドラー用)
+alloc_or_evict()        - RAMが不足した場合にalloc + evict
+alloc_for_swapin()      - エマージェンシープールのみ (faultコンテキスト)
+```
+
+</details>
+
+<details>
+<summary><b>仮想メモリ (VMM)</b></summary>
+
+- **4レベルページテーブル** (PML4 -> PDP -> PD -> PT)
+- **HHDM** - カーネルから物理メモリへアクセスするためのHigher Half Direct Map
+- **mark_swapped()** - ページをスワップアウトした際のswap PTE書き込み
+- ring 0 / ring 3 マッピングのサポート
+
+</details>
+
+<details>
+<summary><b>スワップ (Swap)</b></summary>
+
+ブロックデバイス (ATAディスク) 上のswapの完全な実装:
+
+#### リバースマッピング (swap_map)
+
+- 各物理フレームに `(cr3, virt_addr, age, pinned)` を記録
+- 最大512Kフレーム (2 GB RAM) を追跡
+
+#### 追い出しアルゴリズム - クロックスイープ
+
+```
+Pass 1: age >= 3 のフレームを検索 (最も古いもの)
+Pass 2: 緊急時 - unpinnedフレームを任意に取得
+```
+
+- `touch(phys)` - ページアクセス時にageを1にリセット
+- `age_all()` - タイマーで全フレームのageを増加
+
+#### Swap PTEエンコーディング
+
+```
+bit 0     = 0  (PRESENT=0 - ページはメモリ上にない)
+bit 1     = 1  (SWAP_MARKER - unmappedと区別するフラグ)
+bits 12.. = スワップスロット番号
+```
+
+#### 追い出しフロー
+
+```
+evict_one():
+  1. swap_mapからpick_victim()
+  2. swap_out_internal() -> ページをディスクへ書き込み
+  3. vmm::mark_swapped() -> PTEを更新
+  4. swap_map::untrack() -> リバースマップから削除
+  5. pmm::free_frame() -> フレームを返却
+```
+
+</details>
+
+---
+
+### スケジューラ
+
+| パラメータ | 値 |
+|:--|:--|
+| **方式** | ラウンドロビン、プリエンプティブ |
+| **プロセス数** | 最大16プロセス同時実行 |
+| **コンテキストスイッチ** | タイマー20ティックごと (~200ms) |
+| **コンテキスト** | r15, r14, r13, r12, rbx, rbp, rip, rsp, rflags |
+| **スタック** | プロセスあたり16 KB |
+| **状態** | `Ready`、`Running`、`Dead` |
+
+コンテキストスイッチはnaked asmで実装されており、コンパイラの介入なしにレジスタの完全な保存と復元を行います。
+
+---
+
+### システムコール
+
+`SYSCALL/SYSRET` (MSR経由) で実装され、スタック切り替えに `swapgs` を使用するnaked asmハンドラーです。
+
+| Nr | 名前 | 説明 |
+|:--:|:--|:--|
+| **0** | `sys_write` | stdout/stderrへの書き込み (fd 1/2)、最大4096バイト |
+| **1** | `sys_read` | 読み込み (スタブ) |
+| **2** | `sys_exit` | プロセス終了 + yield |
+| **3** | `sys_sleep` | Nティック間スリープ |
+| **4** | `sys_getpid` | 現在のプロセスのPIDを取得 |
+
+---
+
+### ネットワークスタック
+
+サードパーティライブラリを一切使用せず、完全なネットワークスタックをゼロから実装しています。
+
+<details>
+<summary><b>ネットワークカードドライバ</b></summary>
+
+| ドライバ | チップ |
+|:--|:--|
+| **Intel E1000** | 82540EM、82545EM、82574L、82579LM、I217 |
 | **Realtek RTL8139** | RTL8139 |
-| **Realtek RTL8168** | RTL8168, RTL8169 |
-| **VirtIO Net** | QEMU/KVM виртуальная сетевая карта |
+| **Realtek RTL8168** | RTL8168、RTL8169 |
+| **VirtIO Net** | QEMU/KVM仮想ネットワークカード |
 
-Все драйверы обнаруживаются автоматически через PCI-сканер.
+すべてのドライバはPCIスキャナーによって自動的に検出されます。
 
 </details>
 
 <details>
-<summary><b>Протоколы</b></summary>
+<summary><b>プロトコル</b></summary>
 
-| Уровень | Протоколы |
+| レイヤー | プロトコル |
 |:--|:--|
-| **L2** | Ethernet, ARP (таблица с кэшем) |
-| **L3** | IPv4, ICMP |
-| **L4** | UDP, TCP (с состоянием соединения) |
-| **Прикладной** | DHCP, DNS, NTP, HTTP, Traceroute |
-| **Безопасность** | TLS 1.2 (RSA + AES-128-CBC + SHA) |
+| **L2** | Ethernet、ARP (キャッシュテーブル付き) |
+| **L3** | IPv4、ICMP |
+| **L4** | UDP、TCP (コネクション状態管理付き) |
+| **アプリケーション** | DHCP、DNS、NTP、HTTP、Traceroute |
+| **セキュリティ** | TLS 1.2 (RSA + AES-128-CBC + SHA) |
 
 </details>
 
 <details>
-<summary><b>TLS 1.2 - полная реализация с нуля</b></summary>
+<summary><b>TLS 1.2 - ゼロからの完全実装</b></summary>
 
-- **RSA** - парсинг ASN.1/DER сертификатов, PKCS#1 шифрование
-- **BigNum** - собственная реализация арифметики больших чисел для RSA 2048-bit
-- **AES-128-CBC** - симметричное шифрование
-- **SHA-1, SHA-256, HMAC** - хеширование и аутентификация
-- **PRF** - деривация ключей по RFC 5246
-- **Handshake** - полный цикл: ClientHello → Certificate → ClientKeyExchange → Finished
+- **RSA** - ASN.1/DER証明書のパース、PKCS#1暗号化
+- **BigNum** - RSA 2048-bit用の独自大数演算実装
+- **AES-128-CBC** - 対称暗号化
+- **SHA-1、SHA-256、HMAC** - ハッシュ化と認証
+- **PRF** - RFC 5246に基づくキー導出
+- **ハンドシェイク** - 完全なフロー: ClientHello -> Certificate -> ClientKeyExchange -> Finished
 
-Проверено на реальном Google (TLS RSA 2048, порт 443).
+実際のGoogleサーバー (TLS RSA 2048、ポート443) で動作確認済み。
 
 </details>
 
 ---
 
-### VFS (Virtual File System)
+### VFS (仮想ファイルシステム)
 
 <details>
-<summary><b>Развернуть</b></summary>
+<summary><b>展開する</b></summary>
 
-#### Основное
-- **64 VNode** с полной метадатой - права, uid/gid, timestamps, размер, nlinks
-- **Типы нод**: `Regular`, `Directory`, `Symlink`, `CharDevice`, `BlockDevice`, `Pipe`, `Fifo`, `Socket`
-- **32 открытых файла** одновременно, **8 точек монтирования**
+#### 基本機能
+- **64 VNode** - 権限、uid/gid、タイムスタンプ、サイズ、nlinksの完全なメタデータ付き
+- **ノードタイプ**: `Regular`、`Directory`、`Symlink`、`CharDevice`、`BlockDevice`、`Pipe`、`Fifo`、`Socket`
+- **同時32ファイルオープン**、**8マウントポイント**
 
-#### Кэширование
-- **Page Cache** - 32 страницы × 512 байт, LRU вытеснение
-- **Dentry Cache** - 128 записей, FNV32 хеширование, hit/miss статистика
-- **Slab Allocator** - быстрое выделение страниц
+#### キャッシュ
+- **ページキャッシュ** - 32ページ x 512バイト、LRU追い出し
+- **Dentryキャッシュ** - 128エントリ、FNV32ハッシュ、ヒット/ミス統計
+- **スラブアロケータ** - ページの高速確保
 
-#### Навигация
-- **Path walking** - глубина до 32 компонентов
-- **Symlink resolution** - защита от циклов (8 уровней)
-- **FNV32 хеширование** имён для O(1) lookup
+#### ナビゲーション
+- **パスウォーキング** - 深さ最大32コンポーネント
+- **シンボリックリンク解決** - ループ保護 (8レベル)
+- **FNV32ハッシュ** - O(1)ルックアップのための名前ハッシュ化
 
-#### Безопасность
-- UNIX-модель прав: `owner/group/other`, `setuid/setgid/sticky`
-- Security labels (MAC), квоты по байтам и inodes
-- File locking: shared/exclusive с deadlock detection
+#### セキュリティ
+- UNIXパーミッションモデル: `owner/group/other`、`setuid/setgid/sticky`
+- セキュリティラベル (MAC)、バイトとinode単位のクォータ
+- ファイルロック: デッドロック検出付きshared/exclusive
 
-#### Продвинутые возможности OS
-- **Журнал VFS** - 16 записей операций
-- **Транзакции** - 4 одновременных с откатом
-- **Xattr** - 8 расширенных атрибутов на ноду
-- **Notify events** - inotify-подобная подсистема
-- **Version store** - 16 снапшотов файлов
-- **CAS store** - content-addressable дедупликация
-- **Block I/O queue** - 8 асинхронных запросов
+#### 高度な機能
+- **VFSジャーナル** - 16件の操作ログ
+- **トランザクション** - ロールバック付き同時4件
+- **Xattr** - ノードあたり8つの拡張属性 (名前16バイト、値32バイト)
+- **Notifyイベント** - inotify的サブシステム
+- **バージョンストア** - ファイルの16スナップショット
+- **CASストア** - コンテンツアドレス指定の重複排除
+- **ブロックI/Oキュー** - 8件の非同期リクエスト
 
 </details>
 
 ---
 
-### Файловые системы
+### ファイルシステム
 
-| FS | Точка монтирования | Описание |
+| FS | マウントポイント | 説明 |
 |:--:|:--:|:--|
-| **tmpfs** | `/` | RAM-based корневая FS |
-| **devfs** | `/dev` | Устройства: `null`, `zero`, `random`, `urandom`, `console` |
-| **procfs** | `/proc` | `version`, `uptime`, `meminfo`, `mounts`, `cpuinfo`, `stat` |
-| **ext2** | `/mnt` | Полное чтение и запись реального диска |
-| **ext3** | `/mnt` | Журналирование поверх ext2 (JBD2) |
-| **ext4** | `/mnt` | Extent-based файлы + crc32c checksums |
+| **tmpfs** | `/` | RAMベースのルートFS |
+| **devfs** | `/dev` | デバイス: `null`、`zero`、`random`、`urandom`、`console` |
+| **procfs** | `/proc` | `version`、`uptime`、`meminfo`、`mounts`、`cpuinfo`、`stat` |
+| **ext2** | `/mnt` | 実ディスクへの完全な読み書き |
+| **ext3** | `/mnt` | ext2上のジャーナリング (JBD2) |
+| **ext4** | `/mnt` | エクステントベースファイル + crc32cチェックサム |
 
 ---
 
-### MikuFS — Ext2/3/4 драйвер
+### MikuFS - Ext2/3/4ドライバ
 
 <details>
-<summary><b>Развернуть</b></summary>
+<summary><b>展開する</b></summary>
 
-#### Чтение
-- Superblock, group descriptors, inodes, directory entries
-- Indirect blocks (single / double / triple)
-- Ext4 extent tree
+#### 読み込み
+- スーパーブロック、グループディスクリプタ、inode、ディレクトリエントリ
+- 間接ブロック (シングル / ダブル / トリプル)
+- Ext4エクステントツリー
 
-#### Запись
-- Создание/удаление файлов, директорий, симлинков
-- Bitmap allocator для блоков и inodes (preferred group)
-- Рекурсивное удаление
+#### 書き込み
+- ファイル、ディレクトリ、シンボリックリンクの作成と削除
+- ブロックとinode用ビットマップアロケータ (優先グループ対応)
+- 再帰的な削除
 
-#### Ext3 журнал
-- Создание журнала (`ext2 → ext3` конвертация)
-- Запись транзакций, commit, abort
-- Recovery - replay незавершённых транзакций
+#### Ext3ジャーナル (JBD2)
+- ジャーナルの作成 (`ext2 -> ext3` 変換)
+- トランザクションの書き込み: ディスクリプタブロック、コミットブロック、revokeブロック
+- リカバリ - マウント時に未完了トランザクションをリプレイ
 
-#### Утилиты
-- `fsck` - проверка целостности
-- `tree` - визуализация дерева директорий
-- `du`, `cp`, `mv`, `chmod`, `chown`, hardlink
+#### ユーティリティ
+- `fsck` - 整合性チェック
+- `tree` - ディレクトリツリーの可視化
+- `du`、`cp`、`mv`、`chmod`、`chown`、ハードリンク
 
 </details>
 
 ---
 
-### Shell
+### シェル
 
-| Фича | Описание |
+| 機能 | 説明 |
 |:--|:--|
-| **Ввод** | Посимвольная обработка, вставка в середину строки |
-| **Навигация** | `← → Home End Delete Backspace` |
-| **История** | 16 команд, навигация `↑ ↓` |
-| **Цвета** | miku-тематика: бирюзовый, розовый, белый |
-| **Шрифт** | Кастомный bitmap 9×16 + noto-sans-mono fallback |
-| **Консоль** | Framebuffer рендеринг, автоскролл, RGB per-character |
+| **入力** | 文字単位の処理、行の途中への挿入 |
+| **ナビゲーション** | `<- -> Home End Delete Backspace` |
+| **履歴** | 16コマンド、`Up Down` で移動 |
+| **カラー** | mikuテーマ: ティール、ピンク、ホワイト |
+| **フォント** | カスタムビットマップ 9x16 + noto-sans-monoフォールバック |
+| **コンソール** | フレームバッファレンダリング、自動スクロール、文字単位RGB |
 
 ---
 
-### ATA драйвер
+### コンソールとフレームバッファ
 
-| Параметр | Значение |
-|:--|:--|
-| **Режим** | PIO (Programmed I/O) |
-| **Операции** | Read / Write секторов (512 байт) |
-| **Диски** | 4 шт: Primary/Secondary × Master/Slave |
-| **Защита** | Cache flush после записи, timeout 500K итераций |
+<details>
+<summary><b>展開する</b></summary>
+
+レンダリングはグラフィックライブラリを一切使わず、完全に手動で実装されています:
+
+- **デュアルレンダリング** - カスタムビットマップグリフ 9x16 + noto-sans-monoフォールバック
+- **シャドウバッファ** - blit高速化のための行単位u32バッファ (bpp=4)
+- **BGR/RGBサポート** - フレームバッファのバイトオーダーを自動検出
+- **スクロール** - ピクセル行のmemmove + 最終行のクリア
+- **文字単位カラー** - 各Cellが `(ch, r, g, b)` を独立して保持
+- **カーソル** - カスタムカラーの2ピクセル幅垂直カーソル
+- **COLOR_MIKU** 💙 - デフォルトのティールカラー
+
+</details>
 
 ---
 
-## Команды
+### ATAドライバ
 
-Полный список команд доступен в **[Wiki проекта](https://github.com/altushkaso2/miku-os/wiki)**.
+| パラメータ | 値 |
+|:--|:--|
+| **モード** | PIO (プログラムI/O) |
+| **操作** | セクターの読み書き (512バイト) |
+| **ディスク数** | 4台: Primary/Secondary x Master/Slave |
+| **保護** | 書き込み後のキャッシュフラッシュ、タイムアウト 500Kイテレーション |
 
 ---
 
-## Сборка и запуск
+## コマンド
 
-### Требования
+コマンドの完全なリストは **[プロジェクトのWiki](https://github.com/altushkaso2/miku-os/wiki)** で確認できます。
 
-| Инструмент | Зачем |
+---
+
+## ビルドと実行
+
+### 必要なツール
+
+| ツール | 用途 |
 |:--|:--|
-| **Rust nightly** | `no_std` + нестабильные возможности компилятора |
-| **QEMU** | Эмуляция x86_64 машины |
-| **Cargo** | Сборка builder'а и ядра |
+| **Rust nightly** | `no_std` + コンパイラの不安定な機能 |
+| **QEMU** | x86_64マシンのエミュレーション |
+| **Cargo** | builderとカーネルのビルド |
 
-### Запуск
+### 実行手順
 
 ```bash
 git clone https://github.com/altushkaso2/miku-os
@@ -232,23 +354,23 @@ cd miku-os/builder
 cargo run
 ```
 
-Builder делает всё сам:
+Builderがすべて自動で行います:
 
 ```
-Экономия оперативной памяти? (y/N)
-[1/5] Компиляция ядра miku-os
-[2/5] Создание файловой структуры
-[3/5] Генерация системного образа (system.img)
-[4/5] Подготовка ext2 диска (disk.img)
-[5/5] Запуск QEMU (по желанию (y/N))
+RAMの節約モード? (y/N)
+[1/5] miku-osカーネルのコンパイル
+[2/5] ファイル構造の作成 (ディスクサイズとスワップサイズを入力)
+[3/5] システムイメージの生成 (miku-os.iso)
+[4/5] ディスクの準備
+[5/5] QEMUの起動 (任意 (y/N))
 ```
 
-> Первая сборка займёт пару минут - скачиваются зависимости и компилируется ядро.  
-> Последующие запуски - секунды.
+> 初回ビルドは依存関係のダウンロードとカーネルのコンパイルで数分かかります。
+> 2回目以降は数秒で完了します。
 
 ---
 
-## Авторы
+## 作者
 
 <div align="center">
   <a href="https://github.com/altushkaso2">
@@ -257,31 +379,31 @@ Builder делает всё сам:
   <br><br>
   <a href="https://github.com/altushkaso2"><b>@altushkaso2</b></a>
   <br>
-  <sub>Создатель и единственный разработчик Miku OS</sub>
+  <sub>Miku OSの作者および唯一の開発者</sub>
   <br>
-  <sub>Ядро · VFS · MikuFS · Shell · Сеть · TLS · Планировщик</sub>
+  <sub>カーネル · VFS · MikuFS · シェル · ネットワーク · TLS · スケジューラ · PMM · VMM · Swap</sub>
 </div>
 
 ---
 
-## От автора
+## 作者より
 
-> Всё началось с простой мысли - «а что если взять и написать свою операционную систему?».  
-> С тех пор это стало хобби. Каждый вечер - новая функция, новый баг, новое открытие.  
-> От первого символа на экране до полноценного TLS-стека и планировщика - всё написано вручную,  
-> без готовых библиотек и обёрток. Только Rust, документация и упорство :D  
+> すべては「自分でOSを書いてみたらどうなるだろう?」というシンプルな思いから始まりました。
+> それ以来、これが趣味になりました。毎晩、新しい機能を追加し、新しいバグを直し、新しい発見をしています。
+> 画面への最初の文字表示から、本格的なTLSスタックとスケジューラまで、すべて手作業で書きました。
+> 既製のライブラリやラッパーは一切なし。Rustとドキュメントと根気だけです :D
 >
-> Проект живёт и развивается. Впереди - ELF загрузчик, userspace, пользовательские процессы.  
-> Но это уже следующая глава, которая ждёт Miku OS :)
+> プロジェクトは成長し続けています。次はELFローダー、ユーザースペース、ユーザープロセスが待っています。
+> でもそれはまだ先の話、Miku OSの次の章です :)
 
 <div align="center">
 
-**Miku OS** - чистая OS на Rust, написанная с нуля
+**Miku OS** - Rustでゼロから書かれた純粋なOS
 
-*С любовью 💙*
+*愛を込めて 💙*
 
-<img src="docs/miku.png" width="70" alt="Miku">
+<img src="miku.png" width="70" alt="Miku">
 
-Если проект понравился - поставьте звезду! ⭐
+プロジェクトが気に入ったらスターをつけてください! ⭐
 
 </div>

@@ -22,7 +22,7 @@ pub mod traceroute;
 extern crate alloc;
 use alloc::boxed::Box;
 use arp::ArpTable;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use eth::{EthFrame, ETHERTYPE_ARP, ETHERTYPE_IP};
 use pci::{
     DEV_E1000_82540EM, DEV_E1000_82545EM, DEV_E1000_82574L, DEV_E1000_82579LM, DEV_E1000_I217,
@@ -33,30 +33,12 @@ use udp::UdpSocket;
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{PageTable, PageTableFlags};
 
-pub static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0xFFFF800000000000);
-static KERNEL_VIRT_OFFSET: AtomicU64 = AtomicU64::new(0xFFFFFFFF80000000);
-static KERNEL_PHYS_BASE: AtomicU64 = AtomicU64::new(0x1000000);
+pub use crate::grub::HHDM as HHDM_OFFSET;
+pub use crate::grub::{phys_to_virt, virt_to_phys};
 
 static NET_READY: AtomicBool = AtomicBool::new(false);
 pub static CTRL_C: AtomicBool = AtomicBool::new(false);
 static DRIVER_NAME: Mutex<&'static str> = Mutex::new("none");
-
-pub fn set_hhdm_offset(offset: u64) {
-    HHDM_OFFSET.store(offset, Ordering::Relaxed);
-}
-
-pub fn set_kernel_address(virt_base: u64, phys_base: u64) {
-    KERNEL_VIRT_OFFSET.store(virt_base, Ordering::Relaxed);
-    KERNEL_PHYS_BASE.store(phys_base, Ordering::Relaxed);
-}
-
-pub fn phys_to_virt(phys: u64) -> u64 {
-    phys + HHDM_OFFSET.load(Ordering::Relaxed)
-}
-
-pub fn virt_to_phys(virt: u64) -> u64 {
-    virt - KERNEL_VIRT_OFFSET.load(Ordering::Relaxed) + KERNEL_PHYS_BASE.load(Ordering::Relaxed)
-}
 
 pub trait NetworkDriver: Send {
     fn send(&mut self, data: &[u8]) -> bool;
@@ -98,28 +80,76 @@ impl NetState {
 
 pub static NET: Mutex<NetState> = Mutex::new(NetState::new());
 
-#[repr(align(4096))]
-struct PtSpace([u8; 4096]);
-
-static mut PT_POOL: [PtSpace; 8] = [
-    PtSpace([0; 4096]), PtSpace([0; 4096]), PtSpace([0; 4096]), PtSpace([0; 4096]),
-    PtSpace([0; 4096]), PtSpace([0; 4096]), PtSpace([0; 4096]), PtSpace([0; 4096]),
-];
-static mut PT_IDX: usize = 0;
-
 fn alloc_pt_phys() -> u64 {
+    let phys = crate::pmm::alloc_frame()
+        .expect("map_mmio: out of physical memory for page table");
+    let hhdm = crate::grub::hhdm();
     unsafe {
-        if PT_IDX >= PT_POOL.len() {
-            panic!("Out of static page tables");
-        }
-        let phys = virt_to_phys(PT_POOL[PT_IDX].0.as_ptr() as u64);
-        PT_IDX += 1;
-        phys
+        let ptr = (phys + hhdm) as *mut u8;
+        core::ptr::write_bytes(ptr, 0, 4096);
     }
+    phys
+}
+
+unsafe fn split_huge_p3(p3: &mut PageTable, p3_idx: usize, hhdm: u64) {
+    let huge_phys = p3[p3_idx].addr().as_u64();
+    let huge_flags = p3[p3_idx].flags();
+
+    let new_p2_phys = alloc_pt_phys();
+    let new_p2_ptr = (new_p2_phys + hhdm) as *mut PageTable;
+    let new_p2 = &mut *new_p2_ptr;
+
+    for j in 0..512usize {
+        let page_phys = huge_phys + (j as u64) * 0x20_0000;
+        let mut flags = huge_flags;
+        flags.remove(PageTableFlags::HUGE_PAGE);
+        flags.insert(PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+
+        let new_p1_phys = alloc_pt_phys();
+        let new_p1_ptr = (new_p1_phys + hhdm) as *mut PageTable;
+        let new_p1 = &mut *new_p1_ptr;
+
+        for k in 0..512usize {
+            let phys_4k = page_phys + (k as u64) * 0x1000;
+            new_p1[k].set_addr(
+                x86_64::PhysAddr::new(phys_4k),
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            );
+        }
+
+        new_p2[j].set_addr(x86_64::PhysAddr::new(new_p1_phys), flags);
+    }
+
+    p3[p3_idx].set_addr(
+        x86_64::PhysAddr::new(new_p2_phys),
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+    );
+}
+
+unsafe fn split_huge_p2(p2: &mut PageTable, p2_idx: usize, hhdm: u64) {
+    let huge_phys = p2[p2_idx].addr().as_u64();
+    let huge_flags = p2[p2_idx].flags();
+
+    let new_p1_phys = alloc_pt_phys();
+    let new_p1_ptr = (new_p1_phys + hhdm) as *mut PageTable;
+    let new_p1 = &mut *new_p1_ptr;
+
+    for k in 0..512usize {
+        let phys_4k = huge_phys + (k as u64) * 0x1000;
+        let mut flags = huge_flags;
+        flags.remove(PageTableFlags::HUGE_PAGE);
+        flags.insert(PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+        new_p1[k].set_addr(x86_64::PhysAddr::new(phys_4k), flags);
+    }
+
+    p2[p2_idx].set_addr(
+        x86_64::PhysAddr::new(new_p1_phys),
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+    );
 }
 
 pub fn map_mmio(phys_addr: u64, size: u64) {
-    let hhdm = HHDM_OFFSET.load(Ordering::Relaxed);
+    let hhdm = crate::grub::hhdm();
     let start_page = phys_addr & !0xFFF;
     let end_page = (phys_addr + size + 0xFFF) & !0xFFF;
 
@@ -150,10 +180,8 @@ pub fn map_mmio(phys_addr: u64, size: u64) {
                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
                 );
             } else if p3[p3_idx].flags().contains(PageTableFlags::HUGE_PAGE) {
-                let flags = p3[p3_idx].flags() | PageTableFlags::WRITABLE | PageTableFlags::NO_CACHE;
-                let addr = p3[p3_idx].addr();
-                p3[p3_idx].set_addr(addr, flags);
-                continue;
+                split_huge_p3(p3, p3_idx, hhdm);
+                x86_64::instructions::tlb::flush_all();
             }
 
             let p2_ptr = (p3[p3_idx].addr().as_u64() + hhdm) as *mut PageTable;
@@ -165,10 +193,8 @@ pub fn map_mmio(phys_addr: u64, size: u64) {
                     PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
                 );
             } else if p2[p2_idx].flags().contains(PageTableFlags::HUGE_PAGE) {
-                let flags = p2[p2_idx].flags() | PageTableFlags::WRITABLE | PageTableFlags::NO_CACHE;
-                let addr = p2[p2_idx].addr();
-                p2[p2_idx].set_addr(addr, flags);
-                continue;
+                split_huge_p2(p2, p2_idx, hhdm);
+                x86_64::instructions::tlb::flush_all();
             }
 
             let p1_ptr = (p2[p2_idx].addr().as_u64() + hhdm) as *mut PageTable;
@@ -176,22 +202,21 @@ pub fn map_mmio(phys_addr: u64, size: u64) {
             let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_CACHE;
             p1[p1_idx].set_addr(x86_64::PhysAddr::new(page), flags);
         }
+
+        core::arch::asm!("mfence", options(nostack, nomem));
         x86_64::instructions::tlb::flush_all();
     }
 }
 
-pub fn init() {
+pub fn init() -> Result<(), &'static str> {
+    crate::serial_println!("[net] init: scanning PCI");
     let pci_dev = match pci::find_nic() {
         Some(d) => d,
-        None => {
-            crate::print_warn!("[net] no network adapter found");
-            return;
-        }
+        None => return Err("no network adapter found"),
     };
 
-    crate::print_info!(
-        "[net] found: {} (vendor={:04x} device={:04x} bus={:02x}:{:02x}.{})",
-        pci::device_name(pci_dev.vendor, pci_dev.device),
+    crate::serial_println!(
+        "[net] found: vendor={:04x} device={:04x} bus={:02x}:{:02x}.{}",
         pci_dev.vendor, pci_dev.device,
         pci_dev.bus, pci_dev.dev, pci_dev.func
     );
@@ -203,19 +228,26 @@ pub fn init() {
     match (pci_dev.vendor, pci_dev.device) {
         (VENDOR_INTEL, DEV_E1000_82540EM | DEV_E1000_82545EM | DEV_E1000_82574L
             | DEV_E1000_82579LM | DEV_E1000_I217) => {
+            crate::serial_println!("[net] init: e1000 map_mmio");
             if let Some(mem_phys) = pci_dev.mem_bar(0) {
                 map_mmio(mem_phys, 128 * 1024);
             }
+            crate::serial_println!("[net] init: e1000 driver init");
             if let Some(drv) = e1000::E1000::new(&pci_dev) {
                 state.mac = drv.get_mac();
                 drv_name = pci::device_name(pci_dev.vendor, pci_dev.device);
-                initialized_driver = Some(Box::new(drv));
+                initialized_driver = Some(drv);
+                crate::serial_println!("[net] init: e1000 ok");
+            } else {
+                crate::serial_println!("[net] init: e1000 driver returned None");
             }
         }
         (VENDOR_REALTEK, DEV_RTL8168) => {
+            crate::serial_println!("[net] init: rtl8168 map_mmio");
             if let Some(mem_phys) = pci_dev.mem_bar(1).or_else(|| pci_dev.mem_bar(0)) {
                 map_mmio(mem_phys, 0x1000);
             }
+            crate::serial_println!("[net] init: rtl8168 driver init");
             if let Some(drv) = rtl8168::Rtl8168::new(&pci_dev) {
                 state.mac = drv.get_mac();
                 drv_name = "RTL8168 (r8168)";
@@ -223,6 +255,7 @@ pub fn init() {
             }
         }
         (VENDOR_REALTEK, DEV_RTL8139 | DEV_RTL8169) => {
+            crate::serial_println!("[net] init: rtl8139 driver init");
             if let Some(drv) = rtl8139::Rtl8139::new(&pci_dev) {
                 state.mac = drv.get_mac();
                 drv_name = pci::device_name(pci_dev.vendor, pci_dev.device);
@@ -230,32 +263,31 @@ pub fn init() {
             }
         }
         (VENDOR_VIRTIO, DEV_VIRTIO_NET) => {
+            crate::serial_println!("[net] init: virtio-net driver init");
             if let Some(drv) = virtio::VirtioNet::new(&pci_dev) {
                 state.mac = drv.get_mac();
                 drv_name = "VirtIO-net (legacy)";
                 initialized_driver = Some(Box::new(drv));
             } else {
-                crate::print_warn!("[net] virtio-net init failed");
+                return Err("virtio-net driver init failed");
             }
         }
-        _ => {
-            crate::print_warn!("[net] unsupported adapter");
-        }
+        _ => return Err("unsupported network adapter"),
     }
 
     if let Some(drv) = initialized_driver {
         state.driver = Some(drv);
+        let mac = state.mac;
         drop(state);
         *DRIVER_NAME.lock() = drv_name;
         NET_READY.store(true, Ordering::Release);
-        let mac = NET.lock().mac;
-        crate::print_success!(
+        crate::serial_println!(
             "[net] {} ready  mac: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            drv_name,
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+            drv_name, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
         );
+        Ok(())
     } else {
-        crate::print_error!("[net] driver init failed");
+        Err("driver init failed")
     }
 }
 
@@ -529,12 +561,13 @@ fn rdtsc() -> u64 {
 }
 
 fn wait_rdtsc_ms(ms: u64) {
-    let start = crate::vfs::procfs::uptime_ticks();
-    let target = (ms * 18) / 1000;
-    let target = if target == 0 { 1 } else { target };
+    if ms == 0 { return; }
+    let khz = crate::timing::tsc_khz().max(1);
+    let target_cycles = ms * khz;
+    let start = rdtsc();
     loop {
         if CTRL_C.load(Ordering::SeqCst) { return; }
-        if crate::vfs::procfs::uptime_ticks().wrapping_sub(start) >= target { return; }
+        if rdtsc().wrapping_sub(start) >= target_cycles { return; }
         core::hint::spin_loop();
     }
 }
@@ -565,19 +598,19 @@ pub fn cmd_ping(hostname: &str, target_ip: &[u8; 4], count: usize) {
     let mut rtt_max = 0u64;
     let mut rtt_sum = 0u64;
 
+    let dst_mac = match resolve_arp(target_ip, &our_ip, &our_mac) {
+        Some(m) => m,
+        None => {
+            crate::print_error!("ping: arp resolution failed");
+            return;
+        }
+    };
+
     'ping: for seq in 1..=count {
         if CTRL_C.load(Ordering::SeqCst) {
             crate::println!("^C");
             break;
         }
-
-        let dst_mac = match resolve_arp(target_ip, &our_ip, &our_mac) {
-            Some(m) => m,
-            None => {
-                crate::print_error!("ping: arp failed");
-                break;
-            }
-        };
 
         let mut icmp_buf = [0u8; 64];
         let icmp_len = icmp::build_echo_request(ping_id, seq as u16, &payload[..56], &mut icmp_buf);
@@ -585,6 +618,8 @@ pub fn cmd_ping(hostname: &str, target_ip: &[u8; 4], count: usize) {
         let ip_len = ipv4::build(&our_ip, target_ip, ipv4::PROTO_ICMP, &icmp_buf[..icmp_len], &mut ip_buf);
         let mut eth_buf = [0u8; 128];
         let eth_len = EthFrame::build(&dst_mac, &our_mac, ETHERTYPE_IP, &ip_buf[..ip_len], &mut eth_buf);
+
+        let t_start = rdtsc();
 
         {
             let mut state = NET.lock();
@@ -596,7 +631,6 @@ pub fn cmd_ping(hostname: &str, target_ip: &[u8; 4], count: usize) {
         sent += 1;
 
         let mut got_reply = false;
-        let t_start = rdtsc(); 
         let t_start_wait = crate::vfs::procfs::uptime_ticks();
 
         loop {
@@ -631,7 +665,8 @@ pub fn cmd_ping(hostname: &str, target_ip: &[u8; 4], count: usize) {
                         if let Some(r) = icmp::parse_echo_reply(frame.payload) {
                             if r.id == ping_id && r.seq == seq as u16 {
                                 let t_end = rdtsc();
-                                let rtt_us = (t_end.wrapping_sub(t_start)) / 2500;
+                                let khz = crate::timing::tsc_khz().max(1);
+                                let rtt_us = (t_end.wrapping_sub(t_start)) * 1000 / khz;
                                 let ri = rtt_us / 1000;
                                 let rf = (rtt_us % 1000) / 100;
                                 rtt_sum += rtt_us;
@@ -662,7 +697,7 @@ pub fn cmd_ping(hostname: &str, target_ip: &[u8; 4], count: usize) {
             }
 
             if got_reply { break; }
-            if crate::vfs::procfs::uptime_ticks().wrapping_sub(t_start_wait) >= 36 { break; }
+            if crate::vfs::procfs::uptime_ticks().wrapping_sub(t_start_wait) >= 2000 { break; }
             core::hint::spin_loop();
         }
 
@@ -774,7 +809,7 @@ pub fn resolve_arp(target_ip: &[u8; 4], our_ip: &[u8; 4], our_mac: &[u8; 6]) -> 
             if let Some(m) = NET.lock().arp.lookup(&arp_target) {
                 return Some(m);
             }
-            if crate::vfs::procfs::uptime_ticks().wrapping_sub(start) >= 18 { break; }
+            if crate::vfs::procfs::uptime_ticks().wrapping_sub(start) >= 500 { break; }
             core::hint::spin_loop();
         }
     }

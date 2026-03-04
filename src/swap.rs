@@ -1,0 +1,364 @@
+use spin::Mutex;
+use crate::ata::{AtaDrive, AtaError};
+use crate::pmm;
+
+const SWAP_PAGE_SIZE: u32    = 4096;
+const SWAP_SECS_PER_PAGE: u32 = SWAP_PAGE_SIZE / 512;
+const SWAP_MAGIC: &[u8; 10]  = b"SWAPSPACE2";
+const SWAP_MAX_PAGES: usize  = 65536;
+const SWAP_BITMAP_WORDS: usize = SWAP_MAX_PAGES / 64;
+
+pub struct SwapHeader {
+    pub version:    u32,
+    pub last_page:  u32,
+    pub nr_badpages: u32,
+    pub uuid:       [u8; 16],
+    pub label:      [u8; 16],
+}
+
+struct SwapState {
+    pub active:       bool,
+    pub drive_idx:     usize,
+    pub partition_lba: u32,
+    pub total_pages:   u32,
+    pub used_pages:    u32,
+    bitmap:            [u64; SWAP_BITMAP_WORDS],
+}
+
+impl SwapState {
+    const fn new() -> Self {
+        Self {
+            active:       false,
+            drive_idx:     0,
+            partition_lba: 0,
+            total_pages:   0,
+            used_pages:    0,
+            bitmap:        [0u64; SWAP_BITMAP_WORDS],
+        }
+    }
+
+    fn alloc_slot(&mut self) -> Option<u32> {
+        for word_idx in 0..SWAP_BITMAP_WORDS {
+            let w = self.bitmap[word_idx];
+            if w != u64::MAX {
+                let bit = w.trailing_ones() as usize;
+                let slot = word_idx * 64 + bit;
+                if slot < self.total_pages as usize {
+                    self.bitmap[word_idx] |= 1 << bit;
+                    self.used_pages += 1;
+                    return Some(slot as u32 + 1);
+                }
+            }
+        }
+        None
+    }
+
+    fn free_slot(&mut self, slot: u32) {
+        if slot == 0 || slot > self.total_pages { return; }
+        let idx = (slot as usize - 1) / 64;
+        let bit = (slot as usize - 1) % 64;
+        if self.bitmap[idx] & (1 << bit) != 0 {
+            self.bitmap[idx] &= !(1 << bit);
+            self.used_pages = self.used_pages.saturating_sub(1);
+        }
+    }
+
+    fn is_used(&self, slot: u32) -> bool {
+        if slot == 0 || slot > self.total_pages { return false; }
+        let idx = (slot as usize - 1) / 64;
+        let bit = (slot as usize - 1) % 64;
+        self.bitmap[idx] & (1 << bit) != 0
+    }
+}
+
+static SWAP: Mutex<SwapState> = Mutex::new(SwapState::new());
+
+pub fn swap_total_pages() -> u32 {
+    SWAP.lock().total_pages
+}
+
+pub fn swap_used_pages() -> u32 {
+    SWAP.lock().used_pages
+}
+
+pub fn swap_free_pages() -> u32 {
+    let s = SWAP.lock();
+    s.total_pages.saturating_sub(s.used_pages)
+}
+
+pub fn swap_is_active() -> bool {
+    SWAP.lock().active
+}
+
+pub fn swap_drive_idx() -> usize {
+    SWAP.lock().drive_idx
+}
+
+pub fn swap_partition_lba() -> u32 {
+    SWAP.lock().partition_lba
+}
+
+pub fn swap_total_kb() -> u32 {
+    swap_total_pages() * (SWAP_PAGE_SIZE / 1024)
+}
+
+pub fn swap_used_kb() -> u32 {
+    swap_used_pages() * (SWAP_PAGE_SIZE / 1024)
+}
+
+pub fn swap_free_kb() -> u32 {
+    swap_free_pages() * (SWAP_PAGE_SIZE / 1024)
+}
+
+pub fn mkswap(mut drive: AtaDrive, partition_lba: u32, partition_sectors: u32, label: &str) -> Result<(), AtaError> {
+    let total_pages = partition_sectors / SWAP_SECS_PER_PAGE;
+    if total_pages < 10 {
+        crate::serial_println!("[swap] partition too small: {} pages", total_pages);
+        return Err(AtaError::DeviceFault);
+    }
+
+    let mut page0 = [0u8; 4096];
+
+    page0[0..4].copy_from_slice(&1u32.to_le_bytes());
+    let last_page = total_pages - 1;
+    page0[4..8].copy_from_slice(&last_page.to_le_bytes());
+    page0[8..12].copy_from_slice(&0u32.to_le_bytes());
+
+    let uuid = guid_pseudo_swap(partition_lba);
+    page0[12..28].copy_from_slice(&uuid);
+
+    let lbytes = label.as_bytes();
+    let llen = lbytes.len().min(15);
+    page0[28..28 + llen].copy_from_slice(&lbytes[..llen]);
+
+    page0[4086..4096].copy_from_slice(SWAP_MAGIC);
+
+    for s in 0..SWAP_SECS_PER_PAGE {
+        let off = s as usize * 512;
+        let mut sec = [0u8; 512];
+        sec.copy_from_slice(&page0[off..off + 512]);
+        drive.write_sector(partition_lba + s, &sec)?;
+    }
+
+    crate::serial_println!("[swap] mkswap: lba={} pages={} label='{}'", partition_lba, total_pages, label);
+    Ok(())
+}
+
+pub fn swapon(mut drive: AtaDrive, drive_idx: usize, partition_lba: u32, partition_sectors: u32)
+    -> Result<u32, SwapError>
+{
+    if SWAP.lock().active {
+        return Err(SwapError::AlreadyActive);
+    }
+
+    let mut page0 = [0u8; 4096];
+    for s in 0..SWAP_SECS_PER_PAGE {
+        let off = s as usize * 512;
+        let mut sec = [0u8; 512];
+        drive.read_sector(partition_lba + s, &mut sec).map_err(SwapError::Io)?;
+        page0[off..off + 512].copy_from_slice(&sec);
+    }
+
+    if &page0[4086..4096] != SWAP_MAGIC {
+        return Err(SwapError::InvalidMagic);
+    }
+
+    let version    = u32::from_le_bytes(page0[0..4].try_into().unwrap_or([0;4]));
+    let last_page  = u32::from_le_bytes(page0[4..8].try_into().unwrap_or([0;4]));
+
+    if version != 1 {
+        return Err(SwapError::UnsupportedVersion);
+    }
+
+    let total_pages = last_page + 1;
+
+    {
+        let mut s = SWAP.lock();
+        s.active       = true;
+        s.drive_idx     = drive_idx;
+        s.partition_lba = partition_lba;
+        s.total_pages   = total_pages.saturating_sub(1).min(SWAP_MAX_PAGES as u32);
+        s.used_pages    = 0;
+        s.bitmap        = [0u64; SWAP_BITMAP_WORDS];
+    }
+
+    crate::serial_println!("[swap] swapon: lba={} pages={} ({} MB)",
+        partition_lba, total_pages, total_pages * SWAP_PAGE_SIZE / (1024 * 1024));
+
+    crate::pmm::refill_emergency_pool();
+    crate::serial_println!("[swap] emergency pool filled: {} frames ready",
+        crate::pmm::emergency_frames_available());
+
+    Ok(total_pages)
+}
+
+pub fn swapoff() -> Result<(), SwapError> {
+    let mut s = SWAP.lock();
+    if !s.active {
+        return Err(SwapError::NotActive);
+    }
+    if s.used_pages > 0 {
+        return Err(SwapError::SwapInUse);
+    }
+    s.active       = false;
+    s.total_pages   = 0;
+    s.used_pages    = 0;
+    s.partition_lba = 0;
+    s.bitmap        = [0u64; SWAP_BITMAP_WORDS];
+    crate::serial_println!("[swap] swapoff ok");
+    Ok(())
+}
+
+pub fn swap_out(phys_addr: u64, drive: &mut AtaDrive) -> Result<u32, SwapError> {
+    let slot = {
+        let mut s = SWAP.lock();
+        if !s.active { return Err(SwapError::NotActive); }
+        s.alloc_slot().ok_or(SwapError::NoSpace)?
+    };
+
+    let hhdm = crate::net::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+    let virt = phys_addr + hhdm;
+
+    let page_ptr = virt as *const u8;
+    let lba_base = {
+        let s = SWAP.lock();
+        s.partition_lba + slot * SWAP_SECS_PER_PAGE
+    };
+
+    for s in 0..SWAP_SECS_PER_PAGE {
+        let off = s as usize * 512;
+        let mut sec = [0u8; 512];
+        unsafe {
+            let src = page_ptr.add(off);
+            core::ptr::copy_nonoverlapping(src, sec.as_mut_ptr(), 512);
+        }
+        drive.write_sector(lba_base + s, &sec).map_err(SwapError::Io)?;
+    }
+
+    crate::serial_println!("[swap] swap_out: phys={:#x} -> slot={}", phys_addr, slot);
+    Ok(slot)
+}
+
+pub fn swap_in(slot: u32, phys_addr: u64, drive: &mut AtaDrive) -> Result<(), SwapError> {
+    {
+        let s = SWAP.lock();
+        if !s.active { return Err(SwapError::NotActive); }
+        if !s.is_used(slot) { return Err(SwapError::InvalidSlot); }
+    }
+
+    let hhdm = crate::net::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+    let virt = phys_addr + hhdm;
+
+    let page_ptr = virt as *mut u8;
+    let lba_base = {
+        let s = SWAP.lock();
+        s.partition_lba + slot * SWAP_SECS_PER_PAGE
+    };
+
+    for s in 0..SWAP_SECS_PER_PAGE {
+        let off = s as usize * 512;
+        let mut sec = [0u8; 512];
+        drive.read_sector(lba_base + s, &mut sec).map_err(SwapError::Io)?;
+        unsafe {
+            let dst = page_ptr.add(off);
+            core::ptr::copy_nonoverlapping(sec.as_ptr(), dst, 512);
+        }
+    }
+
+    {
+        let mut s = SWAP.lock();
+        s.free_slot(slot);
+    }
+
+    crate::serial_println!("[swap] swap_in: slot={} -> phys={:#x}", slot, phys_addr);
+    Ok(())
+}
+
+pub fn swap_out_internal(phys_addr: u64, drive: &mut crate::ata::AtaDrive) -> Result<u32, SwapError> {
+    let slot = {
+        let mut s = SWAP.lock();
+        if !s.active { return Err(SwapError::NotActive); }
+        s.alloc_slot().ok_or(SwapError::NoSpace)?
+    };
+
+    let hhdm = crate::net::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+    let virt  = phys_addr + hhdm;
+    let lba_base = {
+        let s = SWAP.lock();
+        s.partition_lba + slot * SWAP_SECS_PER_PAGE
+    };
+
+    let page_ptr = virt as *const u8;
+    for s in 0..SWAP_SECS_PER_PAGE {
+        let off = s as usize * 512;
+        let mut sec = [0u8; 512];
+        unsafe {
+            core::ptr::copy_nonoverlapping(page_ptr.add(off), sec.as_mut_ptr(), 512);
+        }
+        drive.write_sector(lba_base + s, &sec).map_err(SwapError::Io)?;
+    }
+
+    crate::serial_println!("[swap] swap_out: phys={:#x} -> slot={}", phys_addr, slot);
+    Ok(slot)
+}
+
+pub fn swap_in_internal(slot: u32, phys_addr: u64, drive: &mut crate::ata::AtaDrive) -> Result<(), SwapError> {
+    {
+        let s = SWAP.lock();
+        if !s.active { return Err(SwapError::NotActive); }
+        if !s.is_used(slot) { return Err(SwapError::InvalidSlot); }
+    }
+
+    let hhdm = crate::net::HHDM_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+    let virt  = phys_addr + hhdm;
+    let lba_base = {
+        let s = SWAP.lock();
+        s.partition_lba + slot * SWAP_SECS_PER_PAGE
+    };
+
+    let page_ptr = virt as *mut u8;
+    for s in 0..SWAP_SECS_PER_PAGE {
+        let off = s as usize * 512;
+        let mut sec = [0u8; 512];
+        drive.read_sector(lba_base + s, &mut sec).map_err(SwapError::Io)?;
+        unsafe {
+            core::ptr::copy_nonoverlapping(sec.as_ptr(), page_ptr.add(off), 512);
+        }
+    }
+
+    { SWAP.lock().free_slot(slot); }
+    crate::serial_println!("[swap] swap_in: slot={} -> phys={:#x}", slot, phys_addr);
+    Ok(())
+}
+
+pub fn free_swap_slot(slot: u32) {
+    SWAP.lock().free_slot(slot);
+    crate::serial_println!("[swap] free_swap_slot: slot={} freed", slot);
+}
+
+pub fn try_reclaim_page() -> Option<u64> {
+    crate::swap_map::alloc_or_evict()
+}
+
+fn guid_pseudo_swap(seed: u32) -> [u8; 16] {
+    let mut g = [0u8; 16];
+    let a = seed.wrapping_mul(0xDEAD_BEEF).wrapping_add(0x1234_5678);
+    let b = a.wrapping_mul(0xCAFE_BABE).wrapping_add(0xABCD_EF01);
+    g[0..4].copy_from_slice(&a.to_le_bytes());
+    g[4..8].copy_from_slice(&b.to_le_bytes());
+    g[8..12].copy_from_slice(&a.wrapping_add(b).to_le_bytes());
+    g[12..16].copy_from_slice(&b.wrapping_sub(a).to_le_bytes());
+    g
+}
+
+#[derive(Debug)]
+pub enum SwapError {
+    Io(AtaError),
+    AlreadyActive,
+    NotActive,
+    InvalidMagic,
+    UnsupportedVersion,
+    NoSpace,
+    InvalidSlot,
+    SwapInUse,
+}

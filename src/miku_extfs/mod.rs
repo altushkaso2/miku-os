@@ -27,11 +27,13 @@ pub struct MikuFS {
     pub journal_active: bool,
     pub txn_active: bool,
     pub txn_desc_pos: u32,
-    pub txn_tags: [TxnTag; 16],
+    pub txn_tags: [TxnTag; 64],
     pub txn_tag_count: u8,
-    pub txn_revokes: [u32; 32],
+    pub txn_revokes: [u32; 128],
     pub txn_revoke_count: u8,
     pub block_cache: Option<cache::BlockCache>,
+    pub superblock_dirty: bool,
+    pub groups_dirty: [bool; 32],
 }
 
 pub const MAX_DIR_ENTRIES: usize = 64;
@@ -53,6 +55,14 @@ impl MikuFS {
     }
 
     pub fn flush_superblock(&mut self) -> Result<(), FsError> {
+        if self.journal_active {
+            self.superblock_dirty = true;
+            return Ok(());
+        }
+        self.do_write_superblock()
+    }
+
+    fn do_write_superblock(&mut self) -> Result<(), FsError> {
         if self.superblock.has_metadata_csum() {
             self.update_superblock_csum();
         }
@@ -62,10 +72,24 @@ impl MikuFS {
         s1.copy_from_slice(&self.superblock.data[512..1024]);
         self.reader.write_sector(2, &s0)?;
         self.reader.write_sector(3, &s1)?;
+        self.superblock_dirty = false;
         Ok(())
     }
 
     pub fn flush_group_desc(&mut self, group: usize) -> Result<(), FsError> {
+        if self.journal_active {
+            if group < 32 {
+                self.groups_dirty[group] = true;
+            }
+            return Ok(());
+        }
+        self.do_write_group_desc(group)
+    }
+
+    fn do_write_group_desc(&mut self, group: usize) -> Result<(), FsError> {
+        if group >= 32 {
+            return Ok(());
+        }
         if self.superblock.has_metadata_csum() || self.superblock.has_gdt_csum() {
             self.update_group_desc_csum(group);
         }
@@ -81,6 +105,19 @@ impl MikuFS {
         sector[offset_in_sector..offset_in_sector + write_len]
             .copy_from_slice(&self.groups[group].data[..write_len]);
         self.reader.write_sector(lba, &sector)?;
+        self.groups_dirty[group] = false;
+        Ok(())
+    }
+
+    pub fn flush_all_dirty_metadata(&mut self) -> Result<(), FsError> {
+        if self.superblock_dirty {
+            self.do_write_superblock()?;
+        }
+        for group in 0..32 {
+            if self.groups_dirty[group] {
+                self.do_write_group_desc(group)?;
+            }
+        }
         Ok(())
     }
 
@@ -100,31 +137,28 @@ impl MikuFS {
         let inode_size = self.superblock.inode_size_val();
         let write_size = (inode_size as usize).min(256);
         let byte_offset = local_idx as u64 * inode_size as u64;
-        let abs_byte = inode_table_block as u64 * self.block_size as u64 + byte_offset;
-        let sector = (abs_byte / 512) as u32;
-        let offset_in_sector = (abs_byte % 512) as usize;
-        let mut buf = [0u8; 512];
-        self.reader.read_sector(sector, &mut buf)?;
-        if offset_in_sector + write_size <= 512 {
-            buf[offset_in_sector..offset_in_sector + write_size]
+        let bs = self.block_size as usize;
+        let block_idx = (byte_offset / bs as u64) as u32;
+        let offset_in_block = (byte_offset % bs as u64) as usize;
+        let phys_block = inode_table_block + block_idx;
+
+        let mut buf = [0u8; 4096];
+        self.read_block_into(phys_block, &mut buf[..bs])?;
+
+        if offset_in_block + write_size <= bs {
+            buf[offset_in_block..offset_in_block + write_size]
                 .copy_from_slice(&stamped.data[..write_size]);
-            self.reader.write_sector(sector, &buf)?;
+            self.write_block_data(phys_block, &buf[..bs])?;
         } else {
-            let first_part = 512 - offset_in_sector;
-            buf[offset_in_sector..512].copy_from_slice(&stamped.data[..first_part]);
-            self.reader.write_sector(sector, &buf)?;
-            let mut remaining = write_size - first_part;
-            let mut data_pos = first_part;
-            let mut next_sector = sector + 1;
-            while remaining > 0 {
-                self.reader.read_sector(next_sector, &mut buf)?;
-                let chunk = remaining.min(512);
-                buf[..chunk].copy_from_slice(&stamped.data[data_pos..data_pos + chunk]);
-                self.reader.write_sector(next_sector, &buf)?;
-                data_pos += chunk;
-                remaining -= chunk;
-                next_sector += 1;
-            }
+            let first_part = bs - offset_in_block;
+            buf[offset_in_block..bs].copy_from_slice(&stamped.data[..first_part]);
+            self.write_block_data(phys_block, &buf[..bs])?;
+
+            let next_block = phys_block + 1;
+            self.read_block_into(next_block, &mut buf[..bs])?;
+            let remaining = write_size - first_part;
+            buf[..remaining].copy_from_slice(&stamped.data[first_part..write_size]);
+            self.write_block_data(next_block, &buf[..bs])?;
         }
         Ok(())
     }
@@ -155,7 +189,7 @@ impl MikuFS {
         Ok(())
     }
 
-    pub fn write_block_data(&mut self, block_num: u32, data: &[u8]) -> Result<(), FsError> {
+    pub fn write_block_data_direct(&mut self, block_num: u32, data: &[u8]) -> Result<(), FsError> {
         let spb = self.sectors_per_block();
         let base_lba = self.block_to_lba(block_num);
         let bs = self.block_size as usize;
@@ -180,17 +214,47 @@ impl MikuFS {
         Ok(())
     }
 
-    pub fn zero_block(&mut self, block_num: u32) -> Result<(), FsError> {
-        let spb = self.sectors_per_block();
-        let base_lba = self.block_to_lba(block_num);
-        let zero = [0u8; 512];
-        for s in 0..spb {
-            self.reader.write_sector(base_lba + s, &zero)?;
-        }
+    pub fn write_block_data(&mut self, block_num: u32, data: &[u8]) -> Result<(), FsError> {
+        let bs = self.block_size as usize;
         if let Some(ref mut c) = self.block_cache {
-            c.invalidate(block_num);
+            if data.len() >= bs {
+                c.put_dirty(block_num, &data[..bs]);
+                return Ok(());
+            }
+        }
+        self.write_block_data_direct(block_num, data)
+    }
+
+    pub fn sync_dirty_blocks(&mut self) -> Result<(), FsError> {
+        let dirty = match self.block_cache {
+            Some(ref c) => c.get_dirty_blocks(),
+            None => return Ok(()),
+        };
+        let bs = self.block_size as usize;
+        let mut buf = [0u8; 4096];
+        for (block_num, slot) in dirty {
+            if let Some(ref c) = self.block_cache {
+                c.get_block_data(slot, &mut buf[..bs]);
+            }
+            let spb = self.sectors_per_block();
+            let base_lba = self.block_to_lba(block_num);
+            for s in 0..spb {
+                let offset = (s * 512) as usize;
+                let mut sector = [0u8; 512];
+                sector.copy_from_slice(&buf[offset..offset + 512]);
+                self.reader.write_sector(base_lba + s, &sector)?;
+            }
+            if let Some(ref mut c) = self.block_cache {
+                c.mark_clean(slot);
+            }
         }
         Ok(())
+    }
+
+    pub fn zero_block(&mut self, block_num: u32) -> Result<(), FsError> {
+        let bs = self.block_size as usize;
+        let zero = [0u8; 4096];
+        self.write_block_data(block_num, &zero[..bs])
     }
 
     pub fn get_timestamp(&self) -> u32 {
@@ -199,8 +263,8 @@ impl MikuFS {
 
     pub fn init_cache(&mut self) {
         let bs = self.block_size as usize;
-        let max_cache_bytes: usize = 64 * 1024;
-        let entries = (max_cache_bytes / bs).min(32);
+        let max_cache_bytes: usize = 512 * 1024;
+        let entries = (max_cache_bytes / bs).min(256);
         self.block_cache = Some(cache::BlockCache::new(bs, entries));
     }
 

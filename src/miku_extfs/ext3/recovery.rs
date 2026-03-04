@@ -8,7 +8,7 @@ impl MikuFS {
             return Err(FsError::NoJournal);
         }
         let j_inode = self.read_inode(EXT2_JOURNAL_INO)?;
-        let disk_blk = j_inode.block(0);
+        let disk_blk = self.get_file_block(&j_inode, 0)?;
         if disk_blk == 0 {
             return Err(FsError::CorruptedFs);
         }
@@ -26,6 +26,7 @@ impl MikuFS {
         self.write_block_data(disk_blk, &buf[..bs])?;
         self.journal_pos = self.journal_first;
         self.journal_seq = new_seq;
+        crate::serial_println!("[ext3] journal cleaned: new_seq={}", new_seq);
         Ok(())
     }
 
@@ -35,33 +36,44 @@ impl MikuFS {
         }
         let jsb = self.read_journal_superblock()?;
         if jsb.is_clean() {
+            crate::serial_println!("[ext3] journal clean, no recovery needed");
             return Ok(0);
         }
+
         let maxlen = jsb.maxlen();
         let first = jsb.first();
+        let start_seq = jsb.start_sequence();
         let mut block = jsb.start();
         let bs = self.block_size as usize;
-        let mut buf = [0u8; 4096];
         let read_size = bs.min(4096);
         let max_scan = maxlen.min(512);
         let mut scanned = 0u32;
         let mut replayed = 0u32;
+
         let mut tags: [(u32, u32); 64] = [(0, 0); 64];
-        let mut tag_count: usize;
-        let mut committed: bool;
         let mut revoked: [u32; 128] = [0; 128];
         let mut revoke_count = 0usize;
 
+        crate::serial_println!(
+            "[ext3] recovery: start_block={} start_seq={} maxlen={}",
+            block, start_seq, maxlen
+        );
+
         while scanned < max_scan {
-            if self
-                .read_journal_block_data(block, &mut buf[..read_size])
-                .is_err()
-            {
+            let mut buf = [0u8; 4096];
+            if self.read_journal_block_data(block, &mut buf[..read_size]).is_err() {
                 break;
             }
+
             let header = JournalHeader::from_buf(&buf);
             if !header.is_valid() {
                 break;
+            }
+
+            if header.sequence < start_seq {
+                block = self.next_journal_block(block, first, maxlen);
+                scanned += 1;
+                continue;
             }
 
             if header.blocktype == JBD_REVOKE_BLOCK {
@@ -94,11 +106,11 @@ impl MikuFS {
                 continue;
             }
 
-            tag_count = 0;
-            committed = false;
-
+            let descriptor_seq = header.sequence;
+            let mut tag_count = 0usize;
             let mut offset = 12usize;
             let mut data_pos = self.next_journal_block(block, first, maxlen);
+
             loop {
                 if offset + 8 > read_size {
                     break;
@@ -118,26 +130,23 @@ impl MikuFS {
                 }
             }
 
-            let mut skip = block;
-            for _ in 0..tag_count {
-                skip = self.next_journal_block(skip, first, maxlen);
-                scanned += 1;
-            }
-
-            let commit_pos = self.next_journal_block(skip, first, maxlen);
-            scanned += 1;
-
-            if self
-                .read_journal_block_data(commit_pos, &mut buf[..read_size])
+            let commit_pos = data_pos;
+            let mut commit_buf = [0u8; 4096];
+            let committed = if self
+                .read_journal_block_data(commit_pos, &mut commit_buf[..read_size])
                 .is_ok()
             {
-                let ch = JournalHeader::from_buf(&buf);
-                if ch.is_valid() && ch.is_commit() && ch.sequence == header.sequence {
-                    committed = true;
-                }
-            }
+                let ch = JournalHeader::from_buf(&commit_buf);
+                ch.is_valid() && ch.is_commit() && ch.sequence == descriptor_seq
+            } else {
+                false
+            };
 
             if committed {
+                crate::serial_println!(
+                    "[ext3] replaying txn seq={} blocks={}",
+                    descriptor_seq, tag_count
+                );
                 for i in 0..tag_count {
                     let (fs_block, j_pos) = tags[i];
                     let mut is_revoked = false;
@@ -158,15 +167,16 @@ impl MikuFS {
                         }
                     }
                 }
+                block = self.next_journal_block(commit_pos, first, maxlen);
+                scanned += tag_count as u32 + 2;
+            } else {
+                break;
             }
-
-            block = self.next_journal_block(commit_pos, first, maxlen);
-            scanned += 1;
         }
 
-        if replayed > 0 {
-            self.ext3_clean_journal()?;
-        }
+        crate::serial_println!("[ext3] recovery done: replayed={} blocks", replayed);
+
+        self.ext3_clean_journal()?;
 
         Ok(replayed)
     }
