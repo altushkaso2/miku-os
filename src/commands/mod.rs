@@ -1,10 +1,13 @@
 pub mod ext2_cmds;
+pub mod ext_cmds_common;
 pub mod ext3_cmds;
 pub mod ext4_cmds;
 pub mod fs;
 pub mod system;
 pub mod mkfs_cmds;
 pub mod disk_cmds;
+
+extern crate alloc;
 
 use crate::{println, serial_println};
 
@@ -381,9 +384,27 @@ pub fn execute(input: &str) {
 
         "fetch" => {
             if a1.is_empty() {
-                println!("Usage: fetch <host|ip> [port]");
+                crate::println!("Usage: fetch <url|host> [port]");
             } else {
                 cmd_fetch(a1, a2);
+            }
+        }
+
+        "wget" => {
+            if a1.is_empty() {
+                crate::println!("Usage: wget <url> [-O <file>]");
+            } else {
+                x86_64::instructions::interrupts::enable();
+                crate::net::http::cmd_wget(rest);
+            }
+        }
+
+        "curl" => {
+            if a1.is_empty() {
+                crate::println!("Usage: curl <url> [-X GET|POST] [-d <data>] [-o <file>] [-I]");
+            } else {
+                x86_64::instructions::interrupts::enable();
+                crate::net::http::cmd_curl(rest);
             }
         }
 
@@ -405,18 +426,26 @@ pub fn execute(input: &str) {
     }
 }
 
-fn cmd_fetch(host: &str, port_str: &str) {
-    let (host, port, use_tls) = if host.starts_with("https://") {
-        let h = &host[8..];
-        (h, port_str.parse().unwrap_or(443u16), true)
-    } else if host.starts_with("http://") {
-        let h = &host[7..];
-        (h, port_str.parse().unwrap_or(80u16), false)
-    } else {
-        let p: u16 = port_str.parse().unwrap_or(80);
-        (host, p, p == 443)
-    };
+fn cmd_fetch(host_or_url: &str, port_str: &str) {
+    if host_or_url.starts_with("http://") || host_or_url.starts_with("https://") {
+        x86_64::instructions::interrupts::enable();
+        if let Some(resp) = crate::net::http::get(host_or_url) {
+            let sc = if resp.status < 400 { (100u8, 220u8, 150u8) } else { (255u8, 80u8, 80u8) };
+            crate::cprintln!(sc.0, sc.1, sc.2, "HTTP {} {}", resp.status, resp.reason);
+            if resp.body.is_empty() {
+                crate::print_warn!("fetch: empty body");
+            } else {
+                crate::cprintln!(120, 200, 200, "fetch: {} bytes", resp.body.len());
+                print_response(&resp.body);
+            }
+        }
+        return;
+    }
 
+    let (host, port, use_tls) = {
+        let p: u16 = port_str.parse().unwrap_or(80);
+        (host_or_url, p, p == 443)
+    };
     let dns = crate::net::get_dns();
     let ip = match parse_ip(host) {
         Some(ip) => ip,
@@ -424,10 +453,7 @@ fn cmd_fetch(host: &str, port_str: &str) {
             crate::cprintln!(57, 197, 187, "fetch: resolving {}...", host);
             match crate::net::dns::resolve(host, &dns) {
                 Some(ip) => ip,
-                None => {
-                    crate::print_error!("fetch: cannot resolve '{}'", host);
-                    return;
-                }
+                None => { crate::print_error!("fetch: cannot resolve '{}'", host); return; }
             }
         }
     };
@@ -439,24 +465,21 @@ fn cmd_fetch(host: &str, port_str: &str) {
     );
     x86_64::instructions::interrupts::enable();
 
-    let mut req_buf = [0u8; 256];
-    let req_len = build_http_request(host, &mut req_buf);
+    let path = "/";
+    let req_str = alloc::format!(
+        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: MikuOS/0.1\r\nConnection: close\r\n\r\n",
+        path, host
+    );
+    let req_bytes = req_str.as_bytes();
 
     if use_tls {
-        crate::cprintln!(120, 200, 200, "fetch: TLS handshake (RSA 2048)...");
+        crate::cprintln!(120, 200, 200, "fetch: TLS handshake...");
         let mut stream = match crate::net::tls::TlsStream::connect(host, ip, port) {
             Some(s) => s,
-            None => {
-                crate::print_error!("fetch: TLS handshake failed");
-                return;
-            }
+            None => { crate::print_error!("fetch: TLS failed"); return; }
         };
-        crate::print_success!("fetch: TLS connected");
-        if !stream.send(&req_buf[..req_len]) {
-            crate::print_error!("fetch: send failed");
-            stream.close();
-            return;
-        }
+        crate::print_success!("fetch: TLS ok ({})", stream.cipher_name());
+        if !stream.send(req_bytes) { crate::print_error!("fetch: send failed"); stream.close(); return; }
         crate::cprintln!(120, 200, 200, "fetch: waiting for response...");
         let data = stream.recv_all(8_000_000);
         print_response(data);
@@ -464,17 +487,10 @@ fn cmd_fetch(host: &str, port_str: &str) {
     } else {
         let mut sock = match crate::net::tcp::TcpSocket::connect(ip, port) {
             Some(s) => s,
-            None => {
-                crate::print_error!("fetch: connection failed");
-                return;
-            }
+            None => { crate::print_error!("fetch: connection failed"); return; }
         };
         crate::print_success!("fetch: connected");
-        if !sock.send(&req_buf[..req_len]) {
-            crate::print_error!("fetch: send failed");
-            sock.close();
-            return;
-        }
+        if !sock.send(req_bytes) { crate::print_error!("fetch: send failed"); sock.close(); return; }
         crate::cprintln!(120, 200, 200, "fetch: waiting for response...");
         let data = sock.recv_all(8_000_000);
         print_response(data);
@@ -489,7 +505,6 @@ fn print_response(data: &[u8]) {
     }
     let show = data.len().min(4096);
     
-    extern crate alloc;
     let mut text = alloc::string::String::with_capacity(show);
     
     for &b in &data[..show] {
@@ -505,19 +520,6 @@ fn print_response(data: &[u8]) {
     if data.len() > show {
         crate::cprintln!(120, 140, 140, "... ({} bytes total, showing first 4096)", data.len());
     }
-}
-
-fn build_http_request(host: &str, buf: &mut [u8; 256]) -> usize {
-    let mut pos = 0usize;
-    let write = |buf: &mut [u8; 256], pos: &mut usize, s: &[u8]| {
-        let l = s.len().min(256 - *pos);
-        buf[*pos..*pos + l].copy_from_slice(&s[..l]);
-        *pos += l;
-    };
-    write(buf, &mut pos, b"GET / HTTP/1.0\r\nHost: ");
-    write(buf, &mut pos, host.as_bytes());
-    write(buf, &mut pos, b"\r\nConnection: close\r\n\r\n");
-    pos
 }
 
 fn parse_ip(s: &str) -> Option<[u8; 4]> {

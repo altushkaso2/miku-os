@@ -58,7 +58,7 @@ unsafe extern "C" fn kernel_main_grub(mb2_phys: u64) -> ! {
 }
 
 fn kernel_main() -> ! {
-    serial_println!("[kern] MikuOS starting (Release)");
+    serial_println!("[kern] MikuOS starting (Release v0.1.1)");
     gdt::init();
     syscall::init();
     interrupts::init_idt();
@@ -95,7 +95,7 @@ fn kernel_main() -> ! {
     boot_step!("Physical memory manager", Ok(()));
     boot_step!("Virtual file system",       vfs::core::init_vfs());
     boot_step!("Network subsystem",         net::init());
-    scheduler::SCHEDULER.lock().init_main_thread();
+    scheduler::init_main_thread();
     scheduler::init_workers(4);
     boot_step!("Scheduler (4 workers)",   Ok(()));
     x86_64::instructions::interrupts::enable();

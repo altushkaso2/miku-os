@@ -1,5 +1,5 @@
 use spin::Mutex;
-use crate::ata::AtaDrive;
+use x86_64::structures::paging::PageTableFlags;
 
 const MAX_TRACKED: usize = 512 * 1024;
 
@@ -47,6 +47,13 @@ impl SwapMap {
         let idx = Self::frame_idx(phys);
         if idx < MAX_TRACKED && self.entries[idx].is_used() {
             self.entries[idx].age = 1;
+        }
+    }
+
+    pub fn set_pinned(&mut self, phys: u64, pinned: bool) {
+        let idx = Self::frame_idx(phys);
+        if idx < MAX_TRACKED && self.entries[idx].is_used() {
+            self.entries[idx].pinned = pinned;
         }
     }
 
@@ -115,15 +122,6 @@ pub fn slot_from_pte(raw: u64) -> u32 {
     ((raw >> SWAP_PTE_SLOT_SHIFT) & 0xF_FFFF) as u32
 }
 
-fn make_drive(idx: usize) -> AtaDrive {
-    match idx {
-        0 => AtaDrive::primary(),
-        1 => AtaDrive::primary_slave(),
-        2 => AtaDrive::secondary(),
-        _ => AtaDrive::secondary_slave(),
-    }
-}
-
 pub fn evict_one() -> Option<u64> {
     use crate::swap;
     if !swap::swap_is_active() { return None; }
@@ -133,11 +131,14 @@ pub fn evict_one() -> Option<u64> {
     }
 
     let (phys, cr3, virt) = SWAP_MAP.lock().pick_victim()?;
-    let mut drive = make_drive(swap::swap_drive_idx());
 
+    SWAP_MAP.lock().set_pinned(phys, true);
+
+    let mut drive = crate::ata::AtaDrive::from_idx(swap::swap_drive_idx());
     let slot = match swap::swap_out_internal(phys, &mut drive) {
         Ok(s) => s,
         Err(e) => {
+            SWAP_MAP.lock().set_pinned(phys, false);
             crate::serial_println!("[swap_map] swap_out failed: {:?}", e);
             return None;
         }
@@ -149,6 +150,42 @@ pub fn evict_one() -> Option<u64> {
 
     crate::serial_println!("[swap_map] evicted virt={:#x} slot={} phys={:#x}", virt, slot, phys);
     Some(phys)
+}
+
+pub fn try_swapin(cr3: u64, page_addr: u64, slot: u32) -> bool {
+    use crate::swap;
+
+    let phys = match alloc_for_swapin()
+        .or_else(|| { evict_one()?; crate::pmm::alloc_frame() })
+    {
+        Some(f) => f,
+        None => {
+            crate::serial_println!("[swap_map] OOM: no frame for swap-in virt={:#x}", page_addr);
+            return false;
+        }
+    };
+
+    let mut drive = crate::ata::AtaDrive::from_idx(swap::swap_drive_idx());
+    match swap::swap_in_internal(slot, phys, &mut drive) {
+        Ok(()) => {}
+        Err(e) => {
+            crate::pmm::free_frame(phys);
+            crate::serial_println!("[swap_map] swap_in failed: {:?}", e);
+            return false;
+        }
+    }
+
+    let flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::USER_ACCESSIBLE;
+
+    let aspace = crate::vmm::AddressSpace { cr3 };
+    aspace.map_page(page_addr, phys, flags);
+    core::mem::forget(aspace);
+
+    track(phys, cr3, page_addr, false);
+    crate::serial_println!("[swap_map] swap-in ok: virt={:#x} slot={} -> phys={:#x}", page_addr, slot, phys);
+    true
 }
 
 pub fn alloc_or_evict() -> Option<u64> {

@@ -1,14 +1,22 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
+use core::cell::UnsafeCell;
+use core::ptr::null_mut;
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::instructions::interrupts;
 
-use crate::process::{Context, Process, ProcessState, CPU_ALL};
+use crate::process::{
+    pid_range, Process, CPU_ALL,
+    STATE_BLOCKED, STATE_DEAD, STATE_READY, STATE_RUNNING, STATE_SLEEPING,
+};
 
-const CPU_WINDOW_TICKS: u64 = 250;
+const CPU_WINDOW_TICKS: u64   = 250;
+const TICK_SCALE:       u64   = 1_000_000;
+const MAX_PROCS:        usize = 4096;
 
 static PRIO_WEIGHT: [u64; 20] = [
     88761, 71755, 56483, 46273, 36291,
@@ -17,11 +25,181 @@ static PRIO_WEIGHT: [u64; 20] = [
      3121,  2501,  1991,  1586,  1277,
 ];
 
+#[inline]
 fn weight(priority: u8) -> u64 {
     PRIO_WEIGHT[priority.clamp(1, 20) as usize - 1]
 }
 
-const TICK_SCALE: u64 = 1_000_000;
+struct RunQueueInner {
+    head: *mut Process,
+    len:  usize,
+}
+
+struct LockFreeRunQueue(UnsafeCell<RunQueueInner>);
+
+unsafe impl Sync for LockFreeRunQueue {}
+unsafe impl Send for LockFreeRunQueue {}
+
+static RUN_QUEUE: LockFreeRunQueue = LockFreeRunQueue(UnsafeCell::new(RunQueueInner {
+    head: null_mut(),
+    len:  0,
+}));
+
+impl LockFreeRunQueue {
+    unsafe fn push_raw(&self, p: *mut Process) {
+        let inner = &mut *self.0.get();
+        let p_vr  = (*p).vruntime.load(Ordering::Relaxed);
+        let p_pid = (*p).pid;
+        (*p).rq_next.store(null_mut(), Ordering::Relaxed);
+        (*p).on_rq.store(true, Ordering::Relaxed);
+
+        let before_head = inner.head.is_null() || {
+            let h_vr = (*inner.head).vruntime.load(Ordering::Relaxed);
+            p_vr < h_vr || (p_vr == h_vr && p_pid < (*inner.head).pid)
+        };
+
+        if before_head {
+            (*p).rq_next.store(inner.head, Ordering::Relaxed);
+            inner.head = p;
+            inner.len += 1;
+            return;
+        }
+
+        let mut curr = inner.head;
+        loop {
+            let next = (*curr).rq_next.load(Ordering::Relaxed);
+            if next.is_null() {
+                (*curr).rq_next.store(p, Ordering::Relaxed);
+                break;
+            }
+            let nv = (*next).vruntime.load(Ordering::Relaxed);
+            if p_vr < nv || (p_vr == nv && p_pid < (*next).pid) {
+                (*p).rq_next.store(next, Ordering::Relaxed);
+                (*curr).rq_next.store(p, Ordering::Relaxed);
+                break;
+            }
+            curr = next;
+        }
+        inner.len += 1;
+    }
+
+    unsafe fn pop_min_raw(&self) -> Option<*mut Process> {
+        let inner = &mut *self.0.get();
+        if inner.head.is_null() { return None; }
+
+        let mut prev: *mut Process = null_mut();
+        let mut curr = inner.head;
+
+        while !curr.is_null() {
+            if !(*curr).is_idle {
+                let next = (*curr).rq_next.load(Ordering::Relaxed);
+                if prev.is_null() {
+                    inner.head = next;
+                } else {
+                    (*prev).rq_next.store(next, Ordering::Relaxed);
+                }
+                (*curr).rq_next.store(null_mut(), Ordering::Relaxed);
+                (*curr).on_rq.store(false, Ordering::Relaxed);
+                inner.len -= 1;
+                return Some(curr);
+            }
+            prev = curr;
+            curr = (*curr).rq_next.load(Ordering::Relaxed);
+        }
+
+        None
+    }
+
+    unsafe fn peek_min_vr_raw(&self) -> Option<u64> {
+        let inner = &*self.0.get();
+        if inner.head.is_null() { return None; }
+        Some((*inner.head).vruntime.load(Ordering::Relaxed))
+    }
+
+    unsafe fn has_non_idle_raw(&self) -> bool {
+        let inner = &*self.0.get();
+        let mut curr = inner.head;
+        while !curr.is_null() {
+            if !(*curr).is_idle { return true; }
+            curr = (*curr).rq_next.load(Ordering::Relaxed);
+        }
+        false
+    }
+
+    unsafe fn remove_raw(&self, pid: u64) {
+        let inner = &mut *self.0.get();
+        if inner.head.is_null() { return; }
+
+        if (*inner.head).pid == pid {
+            let p = inner.head;
+            inner.head = (*p).rq_next.load(Ordering::Relaxed);
+            (*p).rq_next.store(null_mut(), Ordering::Relaxed);
+            (*p).on_rq.store(false, Ordering::Relaxed);
+            inner.len -= 1;
+            return;
+        }
+
+        let mut curr = inner.head;
+        loop {
+            let next = (*curr).rq_next.load(Ordering::Relaxed);
+            if next.is_null() { return; }
+            if (*next).pid == pid {
+                let after = (*next).rq_next.load(Ordering::Relaxed);
+                (*curr).rq_next.store(after, Ordering::Relaxed);
+                (*next).rq_next.store(null_mut(), Ordering::Relaxed);
+                (*next).on_rq.store(false, Ordering::Relaxed);
+                inner.len -= 1;
+                return;
+            }
+            curr = next;
+        }
+    }
+
+    pub fn push(&self, p: *mut Process) {
+        interrupts::without_interrupts(|| unsafe { self.push_raw(p) });
+    }
+
+    pub fn remove(&self, pid: u64) {
+        interrupts::without_interrupts(|| unsafe { self.remove_raw(pid) });
+    }
+
+    pub fn len(&self) -> usize {
+        interrupts::without_interrupts(|| unsafe { (*self.0.get()).len })
+    }
+}
+
+struct ProcIndex(UnsafeCell<[*mut Process; MAX_PROCS]>);
+
+unsafe impl Sync for ProcIndex {}
+unsafe impl Send for ProcIndex {}
+
+static PROC_INDEX: ProcIndex =
+    ProcIndex(UnsafeCell::new([null_mut::<Process>(); MAX_PROCS]));
+
+impl ProcIndex {
+    #[inline]
+    unsafe fn get_raw(&self, pid: u64) -> *mut Process {
+        if pid as usize >= MAX_PROCS { return null_mut(); }
+        (*self.0.get())[pid as usize]
+    }
+
+    fn set(&self, pid: u64, p: *mut Process) {
+        if pid as usize >= MAX_PROCS { return; }
+        interrupts::without_interrupts(|| unsafe {
+            (*self.0.get())[pid as usize] = p;
+        });
+    }
+
+    fn clear(&self, pid: u64) {
+        self.set(pid, null_mut());
+    }
+}
+
+static CURRENT_PID:    AtomicU64 = AtomicU64::new(0);
+static MIN_VRUNTIME:   AtomicU64 = AtomicU64::new(0);
+static TOTAL_SWITCHES: AtomicU64 = AtomicU64::new(0);
+
+static PROC_TABLE: Mutex<BTreeMap<u64, Box<Process>>> = Mutex::new(BTreeMap::new());
 
 pub trait Task: Send {
     fn run(self: Box<Self>);
@@ -74,255 +252,91 @@ pub struct ThreadStat {
     pub stack_used_kb:  usize,
 }
 
-pub struct Scheduler {
-    pub procs:          BTreeMap<u64, Box<Process>>,
-    pub ready_queue:    BTreeSet<(u64, u64)>,
-    pub sleep_queue:    BTreeSet<(u64, u64)>,
-    pub current:        Option<u64>,
-    pub min_vruntime:   u64,
-    pub current_cpu:    u8,
-    pub total_switches: u64,
+fn register_process(p: Box<Process>) -> *mut Process {
+    let pid = p.pid;
+    let mut table = PROC_TABLE.lock();
+    table.insert(pid, p);
+    let raw: *mut Process = table.get_mut(&pid).unwrap().as_mut();
+    drop(table);
+    PROC_INDEX.set(pid, raw);
+    raw
 }
 
-impl Scheduler {
-    pub const fn new() -> Self {
-        Self {
-            procs:          BTreeMap::new(),
-            ready_queue:    BTreeSet::new(),
-            sleep_queue:    BTreeSet::new(),
-            current:        None,
-            min_vruntime:   0,
-            current_cpu:    0,
-            total_switches: 0,
-        }
-    }
-
-    pub fn init_main_thread(&mut self) {
-        let cr3 = crate::vmm::kernel_cr3();
-        let tick = crate::interrupts::get_tick();
-        let stack = alloc::vec![0u8; crate::process::DEFAULT_STACK_SIZE].into_boxed_slice();
-        let p = Box::new(Process {
-            pid:              0,
-            name:             "idle",
-            state:            ProcessState::Running,
-            context:          Context::zero(),
-            stack,
-            started:          true,
-            cr3,
-            is_idle:          true,
-            priority:         20,
-            cpu_mask:         CPU_ALL,
-            cpu_time:         0,
-            vruntime:         0,
-            wall_start_tick:  tick,
-            last_run_tick:    tick,
-            sleep_count:      0,
-            preempt_count:    0,
-            switch_in_count:  0,
-            window_cpu_ticks: 0,
-            window_start:     tick,
-            user_stack_phys:  None,
-        });
-        self.procs.insert(0, p);
-        self.current = Some(0);
-    }
-
-    pub fn add(&mut self, mut p: Box<Process>) {
-        let pid = p.pid;
-        let name = p.name;
-        p.vruntime = self.min_vruntime;
-        self.ready_queue.insert((p.vruntime, pid));
-        self.procs.insert(pid, p);
-        crate::serial_println!("[sched] thread '{}' pid={} added", name, pid);
-    }
-
-    fn cpu_bit(&self) -> u64 { 1u64 << self.current_cpu }
-
-    fn next_eligible(&self) -> Option<(u64, u64)> {
-        let cpu_bit = self.cpu_bit();
-
-        for &(vr, pid) in self.ready_queue.iter() {
-            if let Some(p) = self.procs.get(&pid) {
-                if p.cpu_mask & cpu_bit != 0 && !p.is_idle {
-                    return Some((vr, pid));
-                }
-            }
-        }
-
-        for &(vr, pid) in self.ready_queue.iter() {
-            if let Some(p) = self.procs.get(&pid) {
-                if p.cpu_mask & cpu_bit != 0 {
-                    return Some((vr, pid));
-                }
-            }
-        }
-
-        None
-    }
-
-    pub fn next(&mut self, current_tick: u64) -> Option<u64> {
-        let dead: Vec<u64> = self.procs.iter()
-            .filter(|(_, p)| p.state == ProcessState::Dead)
-            .map(|(pid, _)| *pid)
-            .collect();
-
-        for pid in dead {
-            if let Some(mut p) = self.procs.remove(&pid) {
-                self.ready_queue.remove(&(p.vruntime, pid));
-                if let Some(phys) = p.user_stack_phys.take() {
-                    crate::pmm::free_frames(phys, crate::process::USER_STACK_PAGES);
-                }
-                if p.cr3 != 0 && p.cr3 != crate::vmm::kernel_cr3() {
-                    let mut aspace = crate::vmm::AddressSpace { cr3: p.cr3 };
-                    aspace.free_address_space();
-                }
-                crate::serial_println!("[sched] pid={} collected", pid);
-            }
-        }
-
-        let to_wake: Vec<(u64, u64)> = self.sleep_queue.iter()
-            .take_while(|&&(wake, _)| current_tick >= wake)
-            .copied()
-            .collect();
-
-        for key in to_wake {
-            self.sleep_queue.remove(&key);
-            let pid = key.1;
-            if let Some(p) = self.procs.get_mut(&pid) {
-                p.state = ProcessState::Ready;
-                p.vruntime = p.vruntime.max(self.min_vruntime);
-                self.ready_queue.insert((p.vruntime, pid));
-            }
-        }
-
-        let mut was_preempted = false;
-
-        if let Some(curr_pid) = self.current {
-            let curr_info = self.procs.get(&curr_pid).map(|p| (p.state, p.is_idle));
-
-            if let Some((state, is_idle)) = curr_info {
-                match state {
-                    ProcessState::Sleeping(wake) => {
-                        if let Some(p) = self.procs.get_mut(&curr_pid) {
-                            p.sleep_count += 1;
-                        }
-                        self.sleep_queue.insert((wake, curr_pid));
-                    }
-                    ProcessState::Blocked(_) | ProcessState::Dead | ProcessState::Ready => {}
-                    ProcessState::Running => {
-                        if is_idle {
-                            let has_ready = self.next_eligible().is_some();
-                            if has_ready {
-                                if let Some(p) = self.procs.get_mut(&curr_pid) {
-                                    p.state = ProcessState::Ready;
-                                    let vr = p.vruntime;
-                                    self.ready_queue.insert((vr, curr_pid));
-                                    was_preempted = true;
-                                }
-                            }
-                        } else {
-                            let new_vr = {
-                                let p = self.procs.get_mut(&curr_pid).unwrap();
-                                p.cpu_time += 1;
-                                p.window_cpu_ticks += 1;
-                                if current_tick.saturating_sub(p.window_start) >= CPU_WINDOW_TICKS {
-                                    p.window_cpu_ticks = 1;
-                                    p.window_start = current_tick;
-                                }
-                                let w = weight(p.priority);
-                                p.vruntime += TICK_SCALE / w;
-                                p.vruntime
-                            };
-
-                            let should_preempt = self
-                                .next_eligible()
-                                .map(|(next_v, _)| new_vr > next_v)
-                                .unwrap_or(false);
-
-                            if should_preempt {
-                                if let Some(p) = self.procs.get_mut(&curr_pid) {
-                                    p.state = ProcessState::Ready;
-                                    let vr = p.vruntime;
-                                    p.preempt_count += 1;
-                                    self.ready_queue.insert((vr, curr_pid));
-                                    was_preempted = true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let need_switch = match self.current {
-            None => true,
-            Some(pid) => match self.procs.get(&pid).map(|p| p.state) {
-                Some(ProcessState::Running) => was_preempted,
-                _ => true,
-            },
-        };
-
-        if !need_switch {
-            return None;
-        }
-
-        if let Some((next_v, next_pid)) = self.next_eligible() {
-            self.ready_queue.remove(&(next_v, next_pid));
-            self.min_vruntime = self.min_vruntime.max(next_v);
-            self.current = Some(next_pid);
-            self.total_switches += 1;
-
-            let p = self.procs.get_mut(&next_pid).unwrap();
-            p.state = ProcessState::Running;
-            p.started = true;
-            p.last_run_tick = current_tick;
-            p.switch_in_count += 1;
-
-            return Some(p.context.rsp);
-        }
-
-        None
-    }
-
-    pub fn thread_stats(&self) -> Vec<ThreadStat> {
-        let now = crate::interrupts::get_tick();
-        let mut out = Vec::new();
-        for (&pid, p) in self.procs.iter() {
-            out.push(ThreadStat {
-                pid,
-                name:          p.name,
-                state:         p.state.name(),
-                priority:      p.priority,
-                cpu_mask:      p.cpu_mask,
-                cpu_time:      p.cpu_time,
-                vruntime:      p.vruntime,
-                preempt_count: p.preempt_count,
-                sleep_count:   p.sleep_count,
-                switch_in:     p.switch_in_count,
-                cpu_pct_x10:   p.cpu_percent_window(now),
-                uptime_ticks:  p.uptime_ticks(now),
-                is_idle:        p.is_idle,
-                stack_alloc_kb: p.stack.len() / 1024,
-                stack_used_kb:  p.stack_used_bytes() / 1024,
-            });
-        }
-        out.sort_by_key(|s| s.pid);
-        out
-    }
+fn add_process(mut p: Box<Process>) {
+    let min_vr = MIN_VRUNTIME.load(Ordering::Relaxed);
+    p.vruntime.store(min_vr, Ordering::Relaxed);
+    let name = p.name;
+    let raw  = register_process(p);
+    let pid  = unsafe { (*raw).pid };
+    interrupts::without_interrupts(|| unsafe { RUN_QUEUE.push_raw(raw) });
+    crate::serial_println!("[sched] spawn pid={} name={}", pid, name);
 }
 
-pub static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler::new());
+pub fn init_main_thread() {
+    let tick = crate::interrupts::get_tick();
+    let cr3  = crate::vmm::kernel_cr3();
+    let raw  = register_process(Process::new_idle(cr3, tick));
+    CURRENT_PID.store(0, Ordering::Release);
+    crate::serial_println!("[sched] idle thread registered ptr={:p}", raw);
+}
 
 pub fn reinit_scheduler() {
-    unsafe {
-        core::ptr::write(
-            core::ptr::addr_of!(SCHEDULER) as *mut Mutex<Scheduler>,
-            Mutex::new(Scheduler::new()),
-        );
-        core::ptr::write(
-            core::ptr::addr_of!(WORK_QUEUE) as *mut Mutex<VecDeque<Box<dyn Task>>>,
-            Mutex::new(VecDeque::new()),
-        );
+    CURRENT_PID.store(0, Ordering::Relaxed);
+    MIN_VRUNTIME.store(0, Ordering::Relaxed);
+    TOTAL_SWITCHES.store(0, Ordering::Relaxed);
+
+    interrupts::without_interrupts(|| unsafe {
+        let inner = &mut *RUN_QUEUE.0.get();
+        inner.head = null_mut();
+        inner.len  = 0;
+
+        let arr = &mut *PROC_INDEX.0.get();
+        for slot in arr.iter_mut() {
+            *slot = null_mut();
+        }
+    });
+
+    PROC_TABLE.lock().clear();
+    *WORK_QUEUE.lock() = VecDeque::new();
+}
+
+pub fn reap_dead() {
+    let curr = CURRENT_PID.load(Ordering::Relaxed);
+
+    let dead_pids: Vec<u64> = {
+        let table = PROC_TABLE.lock();
+        table.iter()
+            .filter(|(_, p)| {
+                p.state.load(Ordering::Relaxed) == STATE_DEAD
+                    && p.pid != curr
+                    && !p.on_rq.load(Ordering::Relaxed)
+            })
+            .map(|(&pid, _)| pid)
+            .collect()
+    };
+
+    for pid in dead_pids {
+        PROC_INDEX.clear(pid);
+
+        let mut table = PROC_TABLE.lock();
+        let collectable = table.get(&pid).map_or(false, |p| {
+            p.state.load(Ordering::Relaxed) == STATE_DEAD
+                && p.pid != curr
+                && !p.on_rq.load(Ordering::Relaxed)
+        });
+        if !collectable { continue; }
+
+        if let Some(mut p) = table.remove(&pid) {
+            drop(table);
+            if let Some(phys) = p.user_stack_phys.take() {
+                crate::pmm::free_frames(phys, crate::process::USER_STACK_PAGES);
+            }
+            if p.cr3 != 0 && p.cr3 != crate::vmm::kernel_cr3() {
+                let mut aspace = crate::vmm::AddressSpace { cr3: p.cr3 };
+                aspace.free_address_space();
+            }
+            crate::serial_println!("[sched] reaped pid={}", pid);
+        }
     }
 }
 
@@ -333,161 +347,252 @@ pub fn spawn(entry: fn() -> !) -> u64 {
 pub fn spawn_named(entry: fn() -> !, name: &'static str, priority: u8) -> u64 {
     let p = Process::new_kernel_named(entry, name, priority);
     let pid = p.pid;
-    interrupts::without_interrupts(|| SCHEDULER.lock().add(p));
+    reap_dead();
+    add_process(p);
     pid
 }
 
 pub fn current_pid() -> u64 {
-    interrupts::without_interrupts(|| SCHEDULER.lock().current.unwrap_or(0))
+    CURRENT_PID.load(Ordering::Relaxed)
 }
 
 pub fn kill(pid: u64) {
     interrupts::without_interrupts(|| {
-        let mut sched = SCHEDULER.lock();
-        if let Some(p) = sched.procs.get_mut(&pid) {
-            p.state = ProcessState::Dead;
-            crate::serial_println!("[sched] kill pid={}", pid);
-        }
+        let ptr = unsafe { PROC_INDEX.get_raw(pid) };
+        if ptr.is_null() { return; }
+        unsafe { &*ptr }.state.store(STATE_DEAD, Ordering::Relaxed);
+        unsafe { RUN_QUEUE.remove_raw(pid) };
+        crate::serial_println!("[sched] kill pid={}", pid);
     });
 }
 
 pub fn wakeup(pid: u64) {
     interrupts::without_interrupts(|| {
-        let mut sched = SCHEDULER.lock();
-        let info = sched.procs.get(&pid).map(|p| (p.state, p.vruntime));
-        if let Some((state, vruntime)) = info {
-            match state {
-                ProcessState::Sleeping(w) => { sched.sleep_queue.remove(&(w, pid)); }
-                ProcessState::Blocked(_)  => {}
-                _ => return,
-            }
-            let min_vr = sched.min_vruntime;
-            if let Some(p) = sched.procs.get_mut(&pid) {
-                let vr = vruntime.max(min_vr);
-                p.vruntime = vr;
-                p.state = ProcessState::Ready;
-                sched.ready_queue.insert((vr, pid));
-            }
-        }
+        let ptr = unsafe { PROC_INDEX.get_raw(pid) };
+        if ptr.is_null() { return; }
+        let p     = unsafe { &*ptr };
+        let state = p.state.load(Ordering::Relaxed);
+        if state != STATE_SLEEPING && state != STATE_BLOCKED { return; }
+        let min_vr = MIN_VRUNTIME.load(Ordering::Relaxed);
+        let vr     = p.vruntime.load(Ordering::Relaxed).max(min_vr);
+        p.vruntime.store(vr, Ordering::Relaxed);
+        p.state.store(STATE_READY, Ordering::Relaxed);
+        unsafe { RUN_QUEUE.push_raw(ptr) };
     });
 }
 
 pub fn set_affinity(pid: u64, mask: u64) {
     interrupts::without_interrupts(|| {
-        if let Some(p) = SCHEDULER.lock().procs.get_mut(&pid) {
-            p.cpu_mask = if mask == 0 { CPU_ALL } else { mask };
-            crate::serial_println!("[sched] pid={} affinity={:#018x}", pid, p.cpu_mask);
-        }
+        let ptr = unsafe { PROC_INDEX.get_raw(pid) };
+        if ptr.is_null() { return; }
+        unsafe { (*ptr).cpu_mask = if mask == 0 { CPU_ALL } else { mask } };
+        crate::serial_println!("[sched] pid={} affinity={:#018x}", pid, mask);
     });
 }
 
 pub fn set_priority(pid: u64, priority: u8) {
     interrupts::without_interrupts(|| {
-        if let Some(p) = SCHEDULER.lock().procs.get_mut(&pid) {
-            p.priority = priority.clamp(1, 20);
-            crate::serial_println!("[sched] pid={} priority={}", pid, p.priority);
-        }
+        let ptr = unsafe { PROC_INDEX.get_raw(pid) };
+        if ptr.is_null() { return; }
+        unsafe { &*ptr }.priority.store(priority.clamp(1, 20), Ordering::Relaxed);
+        crate::serial_println!("[sched] pid={} priority={}", pid, priority);
     });
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn schedule_from_isr(old_rsp: u64) -> u64 {
-    let tick = crate::interrupts::get_tick();
-
-    let mut sched = match SCHEDULER.try_lock() {
-        Some(s) => s,
-        None    => return old_rsp,
-    };
-
-    if let Some(curr_pid) = sched.current {
-        if let Some(p) = sched.procs.get_mut(&curr_pid) {
-            p.context.rsp = old_rsp;
-        }
-    }
-
-    let old_cr3 = sched.current
-        .and_then(|pid| sched.procs.get(&pid))
-        .map(|p| p.cr3);
-
-    let new_rsp = match sched.next(tick) {
-        Some(rsp) => rsp,
-        None      => return old_rsp,
-    };
-
-    let new_pid  = sched.current;
-    let new_cr3  = new_pid.and_then(|pid| sched.procs.get(&pid)).map(|p| p.cr3);
-    let new_rsp0 = new_pid.and_then(|pid| sched.procs.get(&pid)).map(|p| p.stack_top());
-
-    drop(sched);
-
-    if let Some(rsp0) = new_rsp0 {
-        crate::gdt::set_kernel_stack(rsp0);
-    }
-
-    if let (Some(oc), Some(nc)) = (old_cr3, new_cr3) {
-        if oc != nc {
-            core::arch::asm!(
-                "mov cr3, {}",
-                in(reg) nc,
-                options(nostack, preserves_flags)
-            );
-        }
-    }
-
-    new_rsp
 }
 
 pub fn yield_now() {
     interrupts::without_interrupts(|| {
-        let mut sched = SCHEDULER.lock();
-        if let Some(curr) = sched.current {
-            if let Some(p) = sched.procs.get_mut(&curr) {
-                if p.state == ProcessState::Running {
-                    p.state = ProcessState::Ready;
-                    let vr = p.vruntime;
-                    sched.ready_queue.insert((vr, curr));
-                }
-            }
+        let curr = CURRENT_PID.load(Ordering::Relaxed);
+        let ptr  = unsafe { PROC_INDEX.get_raw(curr) };
+        if ptr.is_null() { return; }
+        let p = unsafe { &*ptr };
+        if p.state.load(Ordering::Relaxed) == STATE_RUNNING {
+            p.state.store(STATE_READY, Ordering::Relaxed);
+            unsafe { RUN_QUEUE.push_raw(ptr) };
         }
     });
     unsafe { software_context_switch() }
 }
 
 pub fn sleep(ticks: u64) {
-    let wakeup_tick = crate::interrupts::get_tick() + ticks;
+    let wake_tick = crate::interrupts::get_tick() + ticks;
     interrupts::without_interrupts(|| {
-        let mut sched = SCHEDULER.lock();
-        if let Some(curr) = sched.current {
-            if let Some(p) = sched.procs.get_mut(&curr) {
-                p.state = ProcessState::Sleeping(wakeup_tick);
-            }
-        }
+        let curr = CURRENT_PID.load(Ordering::Relaxed);
+        let ptr  = unsafe { PROC_INDEX.get_raw(curr) };
+        if ptr.is_null() { return; }
+        let p = unsafe { &*ptr };
+        p.sleep_until.store(wake_tick, Ordering::Relaxed);
+        p.state.store(STATE_SLEEPING, Ordering::Relaxed);
     });
     unsafe { software_context_switch() }
 }
 
 pub fn block_current(cause: &'static str) {
     interrupts::without_interrupts(|| {
-        let mut sched = SCHEDULER.lock();
-        if let Some(curr) = sched.current {
-            if let Some(p) = sched.procs.get_mut(&curr) {
-                p.state = ProcessState::Blocked(cause);
-            }
-        }
+        let curr = CURRENT_PID.load(Ordering::Relaxed);
+        let ptr  = unsafe { PROC_INDEX.get_raw(curr) };
+        if ptr.is_null() { return; }
+        let p = unsafe { &*ptr };
+        p.blocked_cause.store(cause.as_ptr() as *mut u8, Ordering::Relaxed);
+        p.state.store(STATE_BLOCKED, Ordering::Relaxed);
     });
     unsafe { software_context_switch() }
 }
 
 pub fn total_switches() -> u64 {
-    interrupts::without_interrupts(|| SCHEDULER.lock().total_switches)
+    TOTAL_SWITCHES.load(Ordering::Relaxed)
 }
 
 pub fn thread_count() -> usize {
-    interrupts::without_interrupts(|| SCHEDULER.lock().procs.len())
+    PROC_TABLE.lock().len()
 }
 
 pub fn get_stats() -> Vec<ThreadStat> {
-    interrupts::without_interrupts(|| SCHEDULER.lock().thread_stats())
+    let now   = crate::interrupts::get_tick();
+    let table = PROC_TABLE.lock();
+    let mut out = Vec::with_capacity(table.len());
+    for (&pid, p) in table.iter() {
+        out.push(ThreadStat {
+            pid,
+            name:           p.name,
+            state:          p.state_name(),
+            priority:       p.priority.load(Ordering::Relaxed),
+            cpu_mask:       p.cpu_mask,
+            cpu_time:       p.cpu_time.load(Ordering::Relaxed),
+            vruntime:       p.vruntime.load(Ordering::Relaxed),
+            preempt_count:  p.preempt_count.load(Ordering::Relaxed),
+            sleep_count:    p.sleep_count.load(Ordering::Relaxed),
+            switch_in:      p.switch_in_count.load(Ordering::Relaxed),
+            cpu_pct_x10:    p.cpu_percent_window(now),
+            uptime_ticks:   p.uptime_ticks(now),
+            is_idle:        p.is_idle,
+            stack_alloc_kb: p.stack.len() / 1024,
+            stack_used_kb:  p.stack_used_bytes() / 1024,
+        });
+    }
+    out.sort_by_key(|s| s.pid);
+    out
+}
+
+#[inline(always)]
+unsafe fn wake_sleepers_isr(tick: u64) {
+    let max    = pid_range().min(MAX_PROCS as u64) as usize;
+    let arr    = &*PROC_INDEX.0.get();
+    let min_vr = MIN_VRUNTIME.load(Ordering::Relaxed);
+
+    for i in 0..max {
+        let ptr = arr[i];
+        if ptr.is_null() { continue; }
+        let p = &*ptr;
+        if p.state.load(Ordering::Relaxed) != STATE_SLEEPING { continue; }
+        if tick < p.sleep_until.load(Ordering::Relaxed) { continue; }
+
+        let vr = p.vruntime.load(Ordering::Relaxed).max(min_vr);
+        p.vruntime.store(vr, Ordering::Relaxed);
+        p.state.store(STATE_READY, Ordering::Relaxed);
+        RUN_QUEUE.push_raw(ptr);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn schedule_from_isr(old_rsp: u64) -> u64 {
+    let tick     = crate::interrupts::get_tick();
+    let curr_pid = CURRENT_PID.load(Ordering::Relaxed);
+    let curr_ptr = PROC_INDEX.get_raw(curr_pid);
+
+    let mut need_switch = false;
+
+    if !curr_ptr.is_null() {
+        let curr = &*curr_ptr;
+        curr.rsp.store(old_rsp, Ordering::Relaxed);
+
+        match curr.state.load(Ordering::Relaxed) {
+            STATE_RUNNING if !curr.is_idle => {
+                let w      = weight(curr.priority.load(Ordering::Relaxed));
+                let dv     = TICK_SCALE / w;
+                let new_vr = curr.vruntime.fetch_add(dv, Ordering::Relaxed) + dv;
+                curr.cpu_time.fetch_add(1, Ordering::Relaxed);
+                curr.window_cpu_ticks.fetch_add(1, Ordering::Relaxed);
+
+                let ws = curr.window_start.load(Ordering::Relaxed);
+                if tick.saturating_sub(ws) >= CPU_WINDOW_TICKS {
+                    curr.window_cpu_ticks.store(1, Ordering::Relaxed);
+                    curr.window_start.store(tick, Ordering::Relaxed);
+                }
+
+                if let Some(next_vr) = RUN_QUEUE.peek_min_vr_raw() {
+                    if new_vr > next_vr {
+                        curr.state.store(STATE_READY, Ordering::Relaxed);
+                        curr.preempt_count.fetch_add(1, Ordering::Relaxed);
+                        RUN_QUEUE.push_raw(curr_ptr);
+                        need_switch = true;
+                    }
+                }
+            }
+            STATE_RUNNING => {
+                if RUN_QUEUE.has_non_idle_raw() {
+                    curr.state.store(STATE_READY, Ordering::Relaxed);
+                    need_switch = true;
+                }
+            }
+            STATE_SLEEPING => {
+                curr.sleep_count.fetch_add(1, Ordering::Relaxed);
+                need_switch = true;
+            }
+            _ => {
+                need_switch = true;
+            }
+        }
+    } else {
+        need_switch = true;
+    }
+
+    wake_sleepers_isr(tick);
+
+    if !need_switch {
+        return old_rsp;
+    }
+
+    let next_ptr = match RUN_QUEUE.pop_min_raw() {
+        Some(p) => p,
+        None => {
+            let idle_ptr = PROC_INDEX.get_raw(0);
+            if idle_ptr.is_null() { return old_rsp; }
+            let idle = &*idle_ptr;
+            if idle.state.load(Ordering::Relaxed) == STATE_RUNNING {
+                return old_rsp;
+            }
+            idle_ptr
+        }
+    };
+
+    let next     = &*next_ptr;
+    let old_cr3  = if !curr_ptr.is_null() { (*curr_ptr).cr3 } else { 0 };
+    let new_cr3  = next.cr3;
+    let new_rsp0 = next.stack_top();
+    let new_rsp  = next.rsp.load(Ordering::Relaxed);
+    let new_pid  = next.pid;
+
+    next.state.store(STATE_RUNNING, Ordering::Relaxed);
+    next.switch_in_count.fetch_add(1, Ordering::Relaxed);
+    next.last_run_tick.store(tick, Ordering::Relaxed);
+
+    let min_vr = MIN_VRUNTIME.load(Ordering::Relaxed)
+        .max(next.vruntime.load(Ordering::Relaxed));
+    MIN_VRUNTIME.store(min_vr, Ordering::Relaxed);
+    TOTAL_SWITCHES.fetch_add(1, Ordering::Relaxed);
+    CURRENT_PID.store(new_pid, Ordering::Relaxed);
+
+    crate::gdt::set_kernel_stack(new_rsp0);
+
+    if old_cr3 != new_cr3 && new_cr3 != 0 {
+        core::arch::asm!(
+            "mov cr3, {}",
+            in(reg) new_cr3,
+            options(nostack, preserves_flags)
+        );
+    }
+
+    new_rsp
 }
 
 #[unsafe(naked)]

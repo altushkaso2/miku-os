@@ -1,10 +1,10 @@
 [package]
 name = "miku-os-release"
 license = "MIT"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["altushkaso2"]
-description = "Experimental Unix-like kernel in Rust"
+description = "Experimental Unix-like OS in Rust"
 repository = "https://github.com/altushkaso2/miku-os"
 
 [dependencies]

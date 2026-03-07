@@ -18,6 +18,10 @@ pub mod tcp_listener;
 pub mod virtio;
 pub mod ntp;
 pub mod traceroute;
+pub mod http;
+pub mod tls_ecdh;
+pub mod http2;
+pub mod tls_gcm;
 
 extern crate alloc;
 use alloc::boxed::Box;

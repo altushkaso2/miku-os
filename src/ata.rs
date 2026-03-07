@@ -43,6 +43,15 @@ impl AtaDrive {
     pub fn secondary()       -> Self { Self::new(0x170, AtaRole::Master) }
     pub fn secondary_slave() -> Self { Self::new(0x170, AtaRole::Slave)  }
 
+    pub fn from_idx(idx: usize) -> Self {
+        match idx {
+            0 => Self::primary(),
+            1 => Self::primary_slave(),
+            2 => Self::secondary(),
+            _ => Self::secondary_slave(),
+        }
+    }
+
     fn device_select_byte(&self, lba_top: u8) -> u8 {
         let base = if self.role == AtaRole::Slave { 0xF0 } else { 0xE0 };
         base | (lba_top & 0x0F)
@@ -94,13 +103,7 @@ impl AtaDrive {
         Err(AtaError::Timeout)
     }
 
-    pub fn read_sector(&mut self, lba: u32, buffer: &mut [u8]) -> Result<(), AtaError> {
-        if buffer.len() < 512 { return Err(AtaError::BufferTooSmall); }
-        if self.base_port == 0 { return Err(AtaError::NoDevice); }
-        unsafe { self.do_read_sector(lba, buffer) }
-    }
-
-    unsafe fn do_read_sector(&mut self, lba: u32, buffer: &mut [u8]) -> Result<(), AtaError> {
+    unsafe fn prepare_pio(&mut self, lba: u32, cmd: u8) -> Result<(), AtaError> {
         let bp = self.base_port;
 
         if Port::<u8>::new(bp + 7).read() == 0xFF {
@@ -108,7 +111,6 @@ impl AtaDrive {
         }
 
         Port::<u8>::new(self.control_port()).write(0x02);
-
         self.wait_not_busy()?;
 
         Port::<u8>::new(bp + 6).write(self.device_select_byte((lba >> 24) as u8));
@@ -118,12 +120,23 @@ impl AtaDrive {
         Port::<u8>::new(bp + 3).write(lba as u8);
         Port::<u8>::new(bp + 4).write((lba >> 8)  as u8);
         Port::<u8>::new(bp + 5).write((lba >> 16) as u8);
-        Port::<u8>::new(bp + 7).write(CMD_READ_PIO);
+        Port::<u8>::new(bp + 7).write(cmd);
 
         self.delay_400ns();
+        Ok(())
+    }
+
+    pub fn read_sector(&mut self, lba: u32, buffer: &mut [u8]) -> Result<(), AtaError> {
+        if buffer.len() < 512 { return Err(AtaError::BufferTooSmall); }
+        if self.base_port == 0 { return Err(AtaError::NoDevice); }
+        unsafe { self.do_read_sector(lba, buffer) }
+    }
+
+    unsafe fn do_read_sector(&mut self, lba: u32, buffer: &mut [u8]) -> Result<(), AtaError> {
+        self.prepare_pio(lba, CMD_READ_PIO)?;
         self.wait_drq()?;
 
-        let mut data_port = Port::<u16>::new(bp);
+        let mut data_port = Port::<u16>::new(self.base_port);
         for i in 0..256 {
             let data = data_port.read();
             buffer[i * 2]     = data as u8;
@@ -131,7 +144,6 @@ impl AtaDrive {
         }
 
         Port::<u8>::new(self.control_port()).write(0x00);
-
         Ok(())
     }
 
@@ -142,45 +154,20 @@ impl AtaDrive {
     }
 
     unsafe fn do_write_sector(&mut self, lba: u32, data: &[u8]) -> Result<(), AtaError> {
-        let bp = self.base_port;
-
-        if Port::<u8>::new(bp + 7).read() == 0xFF {
-            return Err(AtaError::NoDevice);
-        }
-
-        Port::<u8>::new(self.control_port()).write(0x02);
-
-        self.wait_not_busy()?;
-
-        Port::<u8>::new(bp + 6).write(self.device_select_byte((lba >> 24) as u8));
-        self.delay_400ns();
-
-        Port::<u8>::new(bp + 2).write(1);
-        Port::<u8>::new(bp + 3).write(lba as u8);
-        Port::<u8>::new(bp + 4).write((lba >> 8)  as u8);
-        Port::<u8>::new(bp + 5).write((lba >> 16) as u8);
-        Port::<u8>::new(bp + 7).write(CMD_WRITE_PIO);
-
-        self.delay_400ns();
+        self.prepare_pio(lba, CMD_WRITE_PIO)?;
         self.wait_drq()?;
 
-        let mut data_port = Port::<u16>::new(bp);
+        let mut data_port = Port::<u16>::new(self.base_port);
         for i in 0..256 {
             let word = (data[i * 2] as u16) | ((data[i * 2 + 1] as u16) << 8);
             data_port.write(word);
         }
 
         let status = self.wait_not_busy()?;
-        if status & STATUS_DF  != 0 { 
-            Port::<u8>::new(self.control_port()).write(0x00);
-            return Err(AtaError::DeviceFault); 
-        }
-        if status & STATUS_ERR != 0 { 
-            Port::<u8>::new(self.control_port()).write(0x00);
-            return Err(AtaError::ErrorBitSet); 
-        }
-
         Port::<u8>::new(self.control_port()).write(0x00);
+
+        if status & STATUS_DF  != 0 { return Err(AtaError::DeviceFault); }
+        if status & STATUS_ERR != 0 { return Err(AtaError::ErrorBitSet); }
 
         Ok(())
     }
@@ -189,17 +176,16 @@ impl AtaDrive {
         if self.base_port == 0 { return Ok(()); }
 
         unsafe {
-            let bp = self.base_port;
-
             Port::<u8>::new(self.control_port()).write(0x02);
-            Port::<u8>::new(bp + 7).write(CMD_CACHE_FLUSH);
+            Port::<u8>::new(self.base_port + 7).write(CMD_CACHE_FLUSH);
 
             self.delay_400ns();
             let status = self.wait_not_busy()?;
+            Port::<u8>::new(self.control_port()).write(0x00);
+
             if status & STATUS_DF  != 0 { return Err(AtaError::DeviceFault); }
             if status & STATUS_ERR != 0 { return Err(AtaError::ErrorBitSet); }
 
-            Port::<u8>::new(self.control_port()).write(0x00);
             Ok(())
         }
     }

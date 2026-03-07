@@ -63,7 +63,7 @@ impl core::fmt::Write for Serial {
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
     interrupts::without_interrupts(|| {
-        COM1.lock().write_fmt(args).unwrap();
+        let _ = COM1.lock().write_fmt(args);
     });
 }
 

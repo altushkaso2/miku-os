@@ -112,21 +112,36 @@ impl AddressSpace {
         unsafe {
             let p4 = (self.cr3 + hhdm) as *mut PageTable;
             for i in 0..256 {
-                if (&*p4)[i].flags().contains(PageTableFlags::PRESENT) {
-                    let p3 = ((&*p4)[i].addr().as_u64() + hhdm) as *mut PageTable;
-                    for j in 0..512 {
-                        if (&*p3)[j].flags().contains(PageTableFlags::PRESENT) {
-                            let p2 = ((&*p3)[j].addr().as_u64() + hhdm) as *mut PageTable;
-                            for k in 0..512 {
-                                if (&*p2)[k].flags().contains(PageTableFlags::PRESENT) {
-                                    pmm::free_frame((&*p2)[k].addr().as_u64());
-                                }
+                if !(&*p4)[i].flags().contains(PageTableFlags::PRESENT) { continue; }
+                let p3 = ((&*p4)[i].addr().as_u64() + hhdm) as *mut PageTable;
+
+                for j in 0..512 {
+                    if !(&*p3)[j].flags().contains(PageTableFlags::PRESENT) { continue; }
+                    let p2 = ((&*p3)[j].addr().as_u64() + hhdm) as *mut PageTable;
+
+                    for k in 0..512 {
+                        if !(&*p2)[k].flags().contains(PageTableFlags::PRESENT) { continue; }
+                        let p1 = ((&*p2)[k].addr().as_u64() + hhdm) as *mut PageTable;
+
+                        for m in 0..512 {
+                            let e = &(&*p1)[m];
+                            if !e.flags().contains(PageTableFlags::PRESENT) { continue; }
+                            let raw_ptr = &mut (&mut *p1)[m] as *mut _ as *mut u64;
+                            let raw_pte = *raw_ptr;
+                            if crate::swap_map::is_swap_pte(raw_pte) {
+                                let slot = crate::swap_map::slot_from_pte(raw_pte);
+                                crate::swap::free_swap_slot(slot);
+                            } else {
+                                let phys = e.addr().as_u64();
+                                crate::swap_map::untrack(phys);
+                                pmm::free_frame(phys);
                             }
-                            pmm::free_frame((&*p3)[j].addr().as_u64());
                         }
+                        pmm::free_frame((&*p2)[k].addr().as_u64());
                     }
-                    pmm::free_frame((&*p4)[i].addr().as_u64());
+                    pmm::free_frame((&*p3)[j].addr().as_u64());
                 }
+                pmm::free_frame((&*p4)[i].addr().as_u64());
             }
         }
         pmm::free_frame(self.cr3);

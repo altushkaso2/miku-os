@@ -180,21 +180,39 @@ pub fn emergency_frames_available() -> usize {
 }
 
 pub fn refill_emergency_pool() {
-    let mut pool = EMERGENCY_POOL.lock();
-    while pool.count < EMERGENCY_POOL_SIZE {
-        drop(pool);
-        if let Some(f) = PMM.lock().alloc_frames(1) {
-            if !EMERGENCY_POOL.lock().push(f) {
-                PMM.lock().free_frames(f, 1);
+    let current = EMERGENCY_POOL.lock().len();
+    if current >= EMERGENCY_POOL_SIZE {
+        return;
+    }
+    let needed = EMERGENCY_POOL_SIZE - current;
+
+    let mut frames: [u64; EMERGENCY_POOL_SIZE] = [0; EMERGENCY_POOL_SIZE];
+    let mut collected = 0;
+
+    {
+        let mut pmm = PMM.lock();
+        while collected < needed {
+            match pmm.alloc_frames(1) {
+                Some(f) => { frames[collected] = f; collected += 1; }
+                None    => break,
+            }
+        }
+    }
+
+    if collected > 0 {
+        let mut pool = EMERGENCY_POOL.lock();
+        for i in 0..collected {
+            if !pool.push(frames[i]) {
+                drop(pool);
+                PMM.lock().free_frames(frames[i], 1);
+                for j in (i + 1)..collected {
+                    PMM.lock().free_frames(frames[j], 1);
+                }
                 return;
             }
-        } else {
-            return;
         }
-        pool = EMERGENCY_POOL.lock();
     }
 }
-
 
 pub fn add_region(base: u64, size: u64) {
     PMM.lock().add_region(base, size);

@@ -183,80 +183,24 @@ extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: x86_64::structures::idt::PageFaultErrorCode,
 ) {
-    use x86_64::registers::control::Cr2;
-    use x86_64::registers::control::Cr3;
+    use x86_64::registers::control::{Cr2, Cr3};
 
     let fault_addr = Cr2::read().as_u64();
     let page_addr  = fault_addr & !0xFFF;
-
     let (cr3_frame, _) = Cr3::read();
     let cr3 = cr3_frame.start_address().as_u64();
 
     if let Some(pte_raw) = crate::vmm::read_pte_raw(cr3, page_addr) {
         if crate::swap_map::is_swap_pte(pte_raw) {
             let slot = crate::swap_map::slot_from_pte(pte_raw);
-
-            if let Some(new_phys) = crate::swap_map::alloc_for_swapin() {
-                let drive_idx = crate::swap::swap_drive_idx();
-                let mut drive = match drive_idx {
-                    0 => crate::ata::AtaDrive::primary(),
-                    1 => crate::ata::AtaDrive::primary_slave(),
-                    2 => crate::ata::AtaDrive::secondary(),
-                    _ => crate::ata::AtaDrive::secondary_slave(),
-                };
-
-                match crate::swap::swap_in_internal(slot, new_phys, &mut drive) {
-                    Ok(()) => {
-                        let aspace = crate::vmm::AddressSpace { cr3 };
-                        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
-                            | x86_64::structures::paging::PageTableFlags::WRITABLE
-                            | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
-                        aspace.map_page(page_addr, new_phys, flags);
-                        core::mem::forget(aspace);
-
-                        crate::swap_map::track(new_phys, cr3, page_addr, false);
-
-                        crate::serial_println!(
-                            "[pf] swap-in ok: virt={:#x} slot={} -> phys={:#x}",
-                            page_addr, slot, new_phys
-                        );
-                        return;
-                    }
-                    Err(e) => {
-                        crate::serial_println!("[pf] swap-in failed: {:?}", e);
-                    }
-                }
-            } else {
-                crate::serial_println!("[pf] OOM: cannot get frame for swap-in virt={:#x}", page_addr);
-                if crate::swap_map::evict_one().is_some() {
-                    if let Some(f2) = crate::pmm::alloc_frame() {
-                        let drive_idx2 = crate::swap::swap_drive_idx();
-                        let mut drive2 = match drive_idx2 {
-                            0 => crate::ata::AtaDrive::primary(),
-                            1 => crate::ata::AtaDrive::primary_slave(),
-                            2 => crate::ata::AtaDrive::secondary(),
-                            _ => crate::ata::AtaDrive::secondary_slave(),
-                        };
-                        if crate::swap::swap_in_internal(slot, f2, &mut drive2).is_ok() {
-                            let aspace2 = crate::vmm::AddressSpace { cr3 };
-                            let flags2 = x86_64::structures::paging::PageTableFlags::PRESENT
-                                | x86_64::structures::paging::PageTableFlags::WRITABLE
-                                | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
-                            aspace2.map_page(page_addr, f2, flags2);
-                            core::mem::forget(aspace2);
-                            crate::swap_map::track(f2, cr3, page_addr, false);
-                            crate::serial_println!("[pf] swap-in ok on retry: virt={:#x}", page_addr);
-                            return;
-                        }
-                    }
-                }
-                crate::serial_println!("[pf] swap-in at page {:#x}: no free frame for swap-in", page_addr);
+            if crate::swap_map::try_swapin(cr3, page_addr, slot) {
+                return;
             }
         }
     }
 
     crate::serial_println!(
-        "[page fault] FATAL addr={:#x} code={:?}\n{:#?}",
+        "[page fault] fatal addr={:#x} code={:?}\n{:#?}",
         fault_addr, error_code, stack_frame
     );
     loop { x86_64::instructions::hlt(); }

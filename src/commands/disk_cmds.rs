@@ -6,16 +6,6 @@ use crate::gpt::{
 use crate::swap;
 use crate::{cprintln, print_error, print_success, print_warn, print_info, println};
 
-fn drive_from_idx(i: usize) -> Option<AtaDrive> {
-    match i {
-        0 => Some(AtaDrive::primary()),
-        1 => Some(AtaDrive::primary_slave()),
-        2 => Some(AtaDrive::secondary()),
-        3 => Some(AtaDrive::secondary_slave()),
-        _ => None,
-    }
-}
-
 fn parse_drive(s: &str) -> Option<usize> {
     match s { "0" => Some(0), "1" => Some(1), "2" => Some(2), "3" => Some(3), _ => None }
 }
@@ -25,10 +15,7 @@ pub fn cmd_gpt_show(drive_str: &str) {
         Some(i) => i,
         None => { print_error!("  usage: gpt <drive 0-3>"); return; }
     };
-    let mut drive = match drive_from_idx(idx) {
-        Some(d) => d,
-        None => { print_error!("  invalid drive number"); return; }
-    };
+    let mut drive = AtaDrive::from_idx(idx);
 
     let tbl = match gpt::gpt_read(&mut drive) {
         Ok(t)  => t,
@@ -72,10 +59,7 @@ pub fn cmd_gpt_init(drive_str: &str) {
         Some(i) => i,
         None => { print_error!("  usage: gpt.init <drive 0-3>"); return; }
     };
-    let mut drive = match drive_from_idx(idx) {
-        Some(d) => d,
-        None => { print_error!("  invalid drive number"); return; }
-    };
+    let mut drive = AtaDrive::from_idx(idx);
 
     let total_sectors = gpt::gpt_probe_sectors(&mut drive);
     if total_sectors < 2048 {
@@ -87,7 +71,7 @@ pub fn cmd_gpt_init(drive_str: &str) {
     cprintln!(255, 80, 80, "  !! data in those sectors will be destroyed !!");
     println!();
 
-    let drive2 = drive_from_idx(idx).unwrap();
+    let drive2 = AtaDrive::from_idx(idx);
     match gpt::gpt_init(drive2, total_sectors) {
         Ok(()) => {
             print_success!("  GPT initialized on disk {}", idx);
@@ -128,10 +112,7 @@ pub fn cmd_gpt_add(args: &str) {
     };
 
     let size_sectors = size_mb * 1024 * 1024 / 512;
-    let drive = match drive_from_idx(idx) {
-        Some(d) => d,
-        None => { print_error!("  invalid drive number"); return; }
-    };
+    let drive = AtaDrive::from_idx(idx);
 
     match gpt::gpt_add_partition(drive, type_guid, size_sectors, name, 0xABCD1234) {
         Ok(slot) => {
@@ -164,10 +145,7 @@ pub fn cmd_gpt_del(drive_str: &str, index_str: &str) {
     };
     let part_idx = part_num - 1;
 
-    let drive = match drive_from_idx(idx) {
-        Some(d) => d,
-        None => { print_error!("  invalid drive number"); return; }
-    };
+    let drive = AtaDrive::from_idx(idx);
 
     match gpt::gpt_del_partition(drive, part_idx) {
         Ok(()) => print_success!("  partition {} deleted from disk {}", part_num, idx),
@@ -189,10 +167,7 @@ pub fn cmd_mkswap(drive_str: &str, part_str: &str) {
     };
     let part_idx = part_num - 1;
 
-    let mut drive = match drive_from_idx(drive_idx) {
-        Some(d) => d,
-        None => { print_error!("  invalid drive number"); return; }
-    };
+    let mut drive = AtaDrive::from_idx(drive_idx);
 
     let tbl = match gpt::gpt_read(&mut drive) {
         Ok(t)  => t,
@@ -214,7 +189,7 @@ pub fn cmd_mkswap(drive_str: &str, part_str: &str) {
     let partition_lba     = entry.start_lba as u32;
     let partition_sectors = entry.size_sectors() as u32;
 
-    let drive2 = drive_from_idx(drive_idx).unwrap();
+    let drive2 = AtaDrive::from_idx(drive_idx);
     match swap::mkswap(drive2, partition_lba, partition_sectors, "miku-swap") {
         Ok(()) => {
             print_success!("  swap formatted: partition {} on disk {}", part_num, drive_idx);
@@ -237,10 +212,7 @@ pub fn cmd_swapon(drive_str: &str, part_str: &str) {
     };
     let part_idx = part_num - 1;
 
-    let mut drive = match drive_from_idx(drive_idx) {
-        Some(d) => d,
-        None => { print_error!("  invalid drive number"); return; }
-    };
+    let mut drive = AtaDrive::from_idx(drive_idx);
 
     let tbl = match gpt::gpt_read(&mut drive) {
         Ok(t)  => t,
@@ -261,7 +233,7 @@ pub fn cmd_swapon(drive_str: &str, part_str: &str) {
     let partition_lba     = entry.start_lba as u32;
     let partition_sectors = entry.size_sectors() as u32;
 
-    let drive2 = drive_from_idx(drive_idx).unwrap();
+    let drive2 = AtaDrive::from_idx(drive_idx);
     match swap::swapon(drive2, drive_idx, partition_lba, partition_sectors) {
         Ok(pages) => {
             print_success!("  swap activated");
@@ -328,10 +300,7 @@ pub fn cmd_mkswap_raw(args: &str) {
     };
 
     let size_sectors = size_mb * 1024 * 1024 / 512;
-    let drive = match drive_from_idx(drive_idx) {
-        Some(d) => d,
-        None => { print_error!("  invalid drive number"); return; }
-    };
+    let drive = AtaDrive::from_idx(drive_idx);
 
     match swap::mkswap(drive, start_lba, size_sectors, "miku-swap") {
         Ok(()) => {
@@ -361,10 +330,7 @@ pub fn cmd_swapon_raw(args: &str) {
         _ => { print_error!("  invalid size_sectors"); return; }
     };
 
-    let drive = match drive_from_idx(drive_idx) {
-        Some(d) => d,
-        None => { print_error!("  invalid drive number"); return; }
-    };
+    let drive = AtaDrive::from_idx(drive_idx);
 
     match swap::swapon(drive, drive_idx, start_lba, size_sectors) {
         Ok(pages) => {
@@ -387,10 +353,7 @@ pub fn cmd_swapon_auto() {
     crate::println!("  Scanning drives for swap...");
 
     for drive_idx in 0..4usize {
-        let mut drive = match drive_from_idx(drive_idx) {
-            Some(d) => d,
-            None => continue,
-        };
+        let mut drive = AtaDrive::from_idx(drive_idx);
 
         let mut probe = [0u8; 512];
         if drive.read_sector(0, &mut probe).is_err() {
@@ -402,7 +365,7 @@ pub fn cmd_swapon_auto() {
                 if !entry.is_used() || !entry.is_swap() { continue; }
                 let lba      = entry.start_lba as u32;
                 let sectors  = entry.size_sectors() as u32;
-                let drive2   = drive_from_idx(drive_idx).unwrap();
+                let drive2   = AtaDrive::from_idx(drive_idx);
                 match swap::swapon(drive2, drive_idx, lba, sectors) {
                     Ok(pages) => {
                         print_success!("  swap found and activated on drive {}", drive_idx);
@@ -415,10 +378,10 @@ pub fn cmd_swapon_auto() {
             }
         }
 
-        let drive3 = drive_from_idx(drive_idx).unwrap();
-        let total = gpt::gpt_probe_sectors(&mut drive_from_idx(drive_idx).unwrap());
+        let drive3 = AtaDrive::from_idx(drive_idx);
+        let total = gpt::gpt_probe_sectors(&mut AtaDrive::from_idx(drive_idx));
         if total > 16 {
-            let drive4 = drive_from_idx(drive_idx).unwrap();
+            let drive4 = AtaDrive::from_idx(drive_idx);
             if let Ok(pages) = swap::swapon(drive4, drive_idx, 0, total as u32) {
                 print_success!("  whole-disk swap activated on drive {}", drive_idx);
                 crate::println!("  Pages: {}  Size: {} MB", pages, pages as u64 * 4096 / (1024*1024));
