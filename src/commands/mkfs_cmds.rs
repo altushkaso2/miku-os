@@ -158,6 +158,8 @@ fn do_mkfs(args: &str, fs_type: FsType) {
         cprintln!(255, 80, 80, "  !! warning: drive {} will be fully erased!!", drive_idx);
     }
 
+    crate::commands::ext2_cmds::invalidate_drive_mounts(drive_idx, params.start_lba);
+
     println!();
     cprintln!(57, 197, 187, "  mkfs.{} on drive {}...", fs_type.name(), drive_idx);
 

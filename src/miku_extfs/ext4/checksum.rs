@@ -141,14 +141,7 @@ impl MikuFS {
     fn read_bitmap_block(&mut self, bitmap_block: u32) -> Result<[u8; 4096], FsError> {
         let mut buf = [0u8; 4096];
         let bs = self.block_size as usize;
-        let sectors = (bs + 511) / 512;
-        let base_lba = self.block_to_lba(bitmap_block);
-        for s in 0..sectors as u32 {
-            let mut sector = [0u8; 512];
-            self.reader.read_sector(base_lba + s, &mut sector)?;
-            let off = s as usize * 512;
-            buf[off..off + 512].copy_from_slice(&sector);
-        }
+        self.read_block_into(bitmap_block, &mut buf[..bs])?;
         Ok(buf)
     }
 

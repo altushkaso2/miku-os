@@ -152,7 +152,14 @@ impl MikuFS {
     }
 
     pub fn journal_block_to_disk(&mut self, journal_block: u32) -> Result<u32, FsError> {
-        let journal_inode = self.read_inode(EXT2_JOURNAL_INO)?;
+        let journal_inode = match self.journal_inode_cached {
+            Some(ino) => ino,
+            None => {
+                let ino = self.read_inode(EXT2_JOURNAL_INO)?;
+                self.journal_inode_cached = Some(ino);
+                ino
+            }
+        };
         self.get_file_block(&journal_inode, journal_block)
     }
 
@@ -193,6 +200,9 @@ impl MikuFS {
             self.journal_active = false;
             return Ok(());
         }
+        let j_inode = self.read_inode(EXT2_JOURNAL_INO)?;
+        self.journal_inode_cached = Some(j_inode);
+
         let jsb = self.read_journal_superblock()?;
         self.journal_seq = jsb.start_sequence();
         self.journal_maxlen = jsb.maxlen();
@@ -221,6 +231,7 @@ impl MikuFS {
     pub fn ext3_begin_txn(&mut self) -> Result<(), FsError> {
         if !self.journal_active { return Ok(()); }
         if self.txn_active { return Ok(()); }
+        self.journal_checkpoint_if_needed()?;
         self.txn_active = true;
         self.txn_desc_pos = self.journal_pos;
         self.journal_pos = self.advance_journal_pos(self.journal_pos);
@@ -250,12 +261,9 @@ impl MikuFS {
         if tag_count == 0 {
             self.txn_active = false;
             self.txn_revoke_count = 0;
-            self.flush_all_dirty_metadata()?;
             return Ok(());
         }
         let bs = self.block_size as usize;
-
-        self.sync_dirty_blocks()?;
 
         let mut desc = [0u8; 4096];
         desc[0..4].copy_from_slice(&JBD_MAGIC.to_be_bytes());
@@ -274,10 +282,8 @@ impl MikuFS {
         self.write_block_data_direct(desc_disk_block, &desc[..bs])?;
 
         for i in 0..tag_count {
-            let (fs_block, journal_pos) = {
-                let tag = &self.txn_tags[i];
-                (tag.fs_block, tag.journal_pos)
-            };
+            let fs_block = self.txn_tags[i].fs_block;
+            let journal_pos = self.txn_tags[i].journal_pos;
             let mut buf = [0u8; 4096];
             self.read_block_into(fs_block, &mut buf[..bs])?;
             let jdb = self.journal_block_to_disk(journal_pos)?;
@@ -296,14 +302,25 @@ impl MikuFS {
         self.write_block_data_direct(commit_disk_block, &commit[..bs])?;
         self.journal_pos = self.advance_journal_pos(self.journal_pos);
 
-        self.mark_journal_dirty()?;
+        self.mark_journal_dirty_fast()?;
+
         self.journal_seq += 1;
         self.txn_active = false;
         self.txn_tag_count = 0;
         self.txn_revoke_count = 0;
 
-        self.flush_all_dirty_metadata()?;
+        Ok(())
+    }
 
+    fn mark_journal_dirty_fast(&mut self) -> Result<(), FsError> {
+        let disk_blk = self.journal_block_to_disk(0)?;
+        if disk_blk == 0 { return Err(FsError::CorruptedFs); }
+        let lba = self.block_to_lba(disk_blk);
+        let mut sector = [0u8; 512];
+        self.reader.read_sector(lba, &mut sector)?;
+        sector[24..28].copy_from_slice(&self.journal_seq.to_be_bytes());
+        sector[28..32].copy_from_slice(&self.txn_desc_pos.to_be_bytes());
+        self.reader.write_sector(lba, &sector)?;
         Ok(())
     }
 
@@ -314,8 +331,17 @@ impl MikuFS {
     }
 
     fn mark_journal_dirty(&mut self) -> Result<(), FsError> {
-        let j_inode = self.read_inode(EXT2_JOURNAL_INO)?;
-        let disk_blk = self.get_file_block(&j_inode, 0)?;
+        let disk_blk = {
+            let j_inode = match self.journal_inode_cached {
+                Some(ino) => ino,
+                None => {
+                    let ino = self.read_inode(EXT2_JOURNAL_INO)?;
+                    self.journal_inode_cached = Some(ino);
+                    ino
+                }
+            };
+            self.get_file_block(&j_inode, 0)?
+        };
         if disk_blk == 0 { return Err(FsError::CorruptedFs); }
         let bs = self.block_size as usize;
         let mut buf = [0u8; 4096];
@@ -458,6 +484,7 @@ impl MikuFS {
         j_inode.set_links_count(1);
         let direct_count = num_blocks.min(12);
         for i in 0..direct_count {
+            if i > 0 && i % 64 == 0 { self.sync_dirty_blocks()?; }
             let blk = self.alloc_block(0)?;
             self.zero_block(blk)?;
             j_inode.set_block(i as usize, blk);
@@ -469,6 +496,7 @@ impl MikuFS {
             j_inode.set_block(12, indirect_blk);
             let remaining = (num_blocks - 12).min(ptrs_per_block);
             for i in 0..remaining {
+                if i > 0 && i % 64 == 0 { self.sync_dirty_blocks()?; }
                 let blk = self.alloc_block(0)?;
                 self.zero_block(blk)?;
                 self.write_indirect_entry(indirect_blk, i, blk)?;
@@ -484,6 +512,7 @@ impl MikuFS {
             j_inode.write_u32(108, 0);
         }
         self.write_inode(EXT2_JOURNAL_INO, &j_inode)?;
+        self.journal_inode_cached = None;
         self.write_journal_superblock(num_blocks)?;
         let compat = self.superblock.feature_compat();
         self.superblock.write_u32(92, compat | FEATURE_COMPAT_HAS_JOURNAL);

@@ -5,36 +5,58 @@ use crate::ata::AtaDrive;
 pub struct DiskReader {
     pub drive:     AtaDrive,
     pub start_lba: u32,
+    pub io_count:  u32,
 }
 
 impl DiskReader {
     pub fn new(drive: AtaDrive) -> Self {
-        Self { drive, start_lba: 0 }
+        Self { drive, start_lba: 0, io_count: 0 }
     }
 
     pub fn new_partitioned(drive: AtaDrive, start_lba: u32) -> Self {
-        Self { drive, start_lba }
+        Self { drive, start_lba, io_count: 0 }
     }
 
+    pub fn reset_io(&mut self) { self.io_count = 0; }
+
     pub fn read_sector(&mut self, lba: u32, buf: &mut [u8; 512]) -> Result<(), FsError> {
-        self.drive.read_sector(self.start_lba + lba, buf).map_err(|_| FsError::IoError)
+        self.io_count += 1;
+        self.drive.read_sector(self.start_lba + lba, buf)
+            .map_err(|_| FsError::IoError)
     }
 
     pub fn write_sector(&mut self, lba: u32, buf: &[u8; 512]) -> Result<(), FsError> {
-        self.drive.write_sector(self.start_lba + lba, buf).map_err(|_| FsError::IoError)
+        self.io_count += 1;
+        self.drive.write_sector(self.start_lba + lba, buf)
+            .map_err(|_| FsError::IoError)
+    }
+
+    pub fn read_block(
+        &mut self, lba: u32, buf: &mut [u8], sectors: u8,
+    ) -> Result<(), FsError> {
+        self.io_count += 1;
+        self.drive.read_sectors(self.start_lba + lba, buf, sectors)
+            .map_err(|_| FsError::IoError)
+    }
+
+    pub fn write_block(
+        &mut self, lba: u32, buf: &[u8], sectors: u8,
+    ) -> Result<(), FsError> {
+        self.io_count += 1;
+        self.drive.write_sectors(self.start_lba + lba, buf, sectors)
+            .map_err(|_| FsError::IoError)
     }
 
     pub fn flush_drive(&mut self) {
+        self.io_count += 1;
         let _ = self.drive.flush();
     }
 
     pub fn read_superblock(&mut self) -> Result<Superblock, FsError> {
         let mut sb = Superblock::zeroed();
-        let mut sector = [0u8; 512];
-        self.read_sector(2, &mut sector)?;
-        sb.data[0..512].copy_from_slice(&sector);
-        self.read_sector(3, &mut sector)?;
-        sb.data[512..1024].copy_from_slice(&sector);
+        let mut buf = [0u8; 1024];
+        self.read_block(2, &mut buf, 2)?;
+        sb.data.copy_from_slice(&buf);
         Ok(sb)
     }
 

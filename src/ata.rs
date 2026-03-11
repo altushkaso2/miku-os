@@ -7,9 +7,11 @@ const STATUS_DRQ: u8 = 0x08;
 const STATUS_ERR: u8 = 0x01;
 const STATUS_DF:  u8 = 0x20;
 
-const CMD_READ_PIO:    u8 = 0x20;
-const CMD_WRITE_PIO:   u8 = 0x30;
-const CMD_CACHE_FLUSH: u8 = 0xE7;
+const CMD_READ_PIO:      u8 = 0x20;
+const CMD_WRITE_PIO:     u8 = 0x30;
+const CMD_READ_MULTIPLE: u8 = 0xC4;
+const CMD_WRITE_MULTIPLE:u8 = 0xC5;
+const CMD_CACHE_FLUSH:   u8 = 0xE7;
 
 #[derive(Debug, Clone, Copy)]
 pub enum AtaError {
@@ -126,6 +128,29 @@ impl AtaDrive {
         Ok(())
     }
 
+    unsafe fn prepare_pio_multi(&mut self, lba: u32, count: u8, cmd: u8) -> Result<(), AtaError> {
+        let bp = self.base_port;
+
+        if Port::<u8>::new(bp + 7).read() == 0xFF {
+            return Err(AtaError::NoDevice);
+        }
+
+        Port::<u8>::new(self.control_port()).write(0x02);
+        self.wait_not_busy()?;
+
+        Port::<u8>::new(bp + 6).write(self.device_select_byte((lba >> 24) as u8));
+        self.delay_400ns();
+
+        Port::<u8>::new(bp + 2).write(count);
+        Port::<u8>::new(bp + 3).write(lba as u8);
+        Port::<u8>::new(bp + 4).write((lba >> 8)  as u8);
+        Port::<u8>::new(bp + 5).write((lba >> 16) as u8);
+        Port::<u8>::new(bp + 7).write(cmd);
+
+        self.delay_400ns();
+        Ok(())
+    }
+
     pub fn read_sector(&mut self, lba: u32, buffer: &mut [u8]) -> Result<(), AtaError> {
         if buffer.len() < 512 { return Err(AtaError::BufferTooSmall); }
         if self.base_port == 0 { return Err(AtaError::NoDevice); }
@@ -169,6 +194,57 @@ impl AtaDrive {
         if status & STATUS_DF  != 0 { return Err(AtaError::DeviceFault); }
         if status & STATUS_ERR != 0 { return Err(AtaError::ErrorBitSet); }
 
+        Ok(())
+    }
+
+    pub fn read_sectors(&mut self, lba: u32, buf: &mut [u8], count: u8) -> Result<(), AtaError> {
+        if count == 0 { return Ok(()); }
+        if buf.len() < count as usize * 512 { return Err(AtaError::BufferTooSmall); }
+        if self.base_port == 0 { return Err(AtaError::NoDevice); }
+        if count == 1 {
+            return self.read_sector(lba, buf);
+        }
+        unsafe {
+            self.prepare_pio_multi(lba, count, CMD_READ_MULTIPLE)?;
+            let mut data_port = Port::<u16>::new(self.base_port);
+            for s in 0..count as usize {
+                self.wait_drq()?;
+                let offset = s * 512;
+                for w in 0..256 {
+                    let word = data_port.read();
+                    buf[offset + w * 2]     = word as u8;
+                    buf[offset + w * 2 + 1] = (word >> 8) as u8;
+                }
+            }
+            Port::<u8>::new(self.control_port()).write(0x00);
+        }
+        Ok(())
+    }
+
+    pub fn write_sectors(&mut self, lba: u32, buf: &[u8], count: u8) -> Result<(), AtaError> {
+        if count == 0 { return Ok(()); }
+        if buf.len() < count as usize * 512 { return Err(AtaError::BufferTooSmall); }
+        if self.base_port == 0 { return Err(AtaError::NoDevice); }
+        if count == 1 {
+            return self.write_sector(lba, buf);
+        }
+        unsafe {
+            self.prepare_pio_multi(lba, count, CMD_WRITE_MULTIPLE)?;
+            let mut data_port = Port::<u16>::new(self.base_port);
+            for s in 0..count as usize {
+                self.wait_drq()?;
+                let offset = s * 512;
+                for w in 0..256 {
+                    let word = (buf[offset + w * 2] as u16)
+                             | ((buf[offset + w * 2 + 1] as u16) << 8);
+                    data_port.write(word);
+                }
+            }
+            let status = self.wait_not_busy()?;
+            Port::<u8>::new(self.control_port()).write(0x00);
+            if status & STATUS_DF  != 0 { return Err(AtaError::DeviceFault); }
+            if status & STATUS_ERR != 0 { return Err(AtaError::ErrorBitSet); }
+        }
         Ok(())
     }
 

@@ -58,7 +58,7 @@ unsafe extern "C" fn kernel_main_grub(mb2_phys: u64) -> ! {
 }
 
 fn kernel_main() -> ! {
-    serial_println!("[kern] MikuOS starting (Release v0.1.1)");
+    serial_println!("[kern] MikuOS starting (Release v0.1.2)");
     gdt::init();
     syscall::init();
     interrupts::init_idt();

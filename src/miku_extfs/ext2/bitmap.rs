@@ -31,7 +31,7 @@ impl MikuFS {
                             break;
                         }
                         buf[byte_idx] |= 1 << bit;
-                        self.write_block_data_direct(bitmap_block, &buf[..bs])?;
+                        self.write_block_data(bitmap_block, &buf[..bs])?;
                         self.update_block_bitmap_csum(group)?;
                         self.update_group_free_blocks(group, -1)?;
                         self.update_superblock_free_blocks(-1)?;
@@ -100,7 +100,7 @@ impl MikuFS {
                             break;
                         }
                         buf[byte_idx] |= 1 << bit;
-                        self.write_block_data_direct(bitmap_block, &buf[..bs])?;
+                        self.write_block_data(bitmap_block, &buf[..bs])?;
                         self.update_inode_bitmap_csum(group)?;
                         self.update_group_free_inodes(group, -1)?;
                         self.update_superblock_free_inodes(-1)?;
@@ -156,7 +156,7 @@ impl MikuFS {
             buf[byte_index] &= !(1 << bit_offset);
         }
 
-        self.write_block_data_direct(bitmap_block, &buf[..bs])?;
+        self.write_block_data(bitmap_block, &buf[..bs])?;
         Ok(())
     }
 

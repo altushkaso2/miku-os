@@ -20,6 +20,7 @@ const EMPTY_FS: MikuFS = MikuFS {
     reader: DiskReader {
         drive:     AtaDrive::EMPTY,
         start_lba: 0,
+        io_count: 0,
     },
     journal_seq:      0,
     journal_pos:      0,
@@ -35,6 +36,8 @@ const EMPTY_FS: MikuFS = MikuFS {
     block_cache:      None,
     superblock_dirty: false,
     groups_dirty:     [false; 32],
+    last_sync_ticks: 0,
+    journal_inode_cached: None,
 };
 
 static mut FS_SLOTS:     [MikuFS; MAX_MOUNTS] = [EMPTY_FS; MAX_MOUNTS];
@@ -62,6 +65,11 @@ pub fn is_ext2_ready() -> bool {
     unsafe { FS_READY[ACTIVE_SLOT] }
 }
 
+pub unsafe fn ext_fs_version_tag() -> &'static str {
+    if !FS_READY[ACTIVE_SLOT] { return "ext"; }
+    FS_SLOTS[ACTIVE_SLOT].superblock.fs_version_str()
+}
+
 pub fn with_ext2_pub<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut MikuFS) -> R,
@@ -79,6 +87,7 @@ pub unsafe fn force_unmount() {
     let slot = ACTIVE_SLOT;
     FS_READY[slot] = false;
     FS_SLOTS[slot].block_cache = None;
+        FS_SLOTS[slot].journal_inode_cached = None;
 }
 
 pub fn cmd_fs_list() {
@@ -153,6 +162,7 @@ pub fn cmd_fs_umount(args: &str) {
         let _ = FS_SLOTS[slot].flush_all_dirty_metadata();
         FS_READY[slot] = false;
         FS_SLOTS[slot].block_cache = None;
+        FS_SLOTS[slot].journal_inode_cached = None;
         print_success!("  slot {} unmounted", slot);
         if ACTIVE_SLOT == slot {
             let other = 1 - slot;
@@ -201,12 +211,38 @@ fn make_ata_drive(idx: usize) -> AtaDrive {
     }
 }
 
+pub fn invalidate_drive_mounts(drive_idx: usize, start_lba: u32) {
+    let _g = EXT2_LOCK.lock();
+    unsafe {
+        for i in 0..MAX_MOUNTS {
+            if FS_READY[i] && FS_DRIVE_IDX[i] == drive_idx && FS_START_LBA[i] == start_lba {
+                let _ = FS_SLOTS[i].flush_all_dirty_metadata();
+                FS_READY[i] = false;
+                FS_SLOTS[i].block_cache = None;
+                FS_SLOTS[i].journal_inode_cached = None;
+                serial_println!("[miku_extfs] slot {} invalidated (drive {} lba {} reformatted)", i, drive_idx, start_lba);
+            }
+        }
+    }
+}
+
 fn find_free_slot() -> Option<usize> {
     unsafe {
         for i in 0..MAX_MOUNTS {
             if !FS_READY[i] { return Some(i); }
         }
         None
+    }
+}
+
+fn is_already_mounted(drive_index: usize, start_lba: u32) -> bool {
+    unsafe {
+        for i in 0..MAX_MOUNTS {
+            if FS_READY[i] && FS_DRIVE_IDX[i] == drive_index && FS_START_LBA[i] == start_lba {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -218,6 +254,10 @@ pub fn cmd_ext2_mount(args: &str) {
     if drive_str.is_empty() {
         serial_println!("[miku_extfs] scanning all drives...");
         for &i in &[2usize, 1, 3, 0] {
+            if is_already_mounted(i, 0) {
+                serial_println!("[miku_extfs] drive {} lba 0 - already mounted, skip", i);
+                continue;
+            }
             serial_println!("[miku_extfs] trying drive {} ...", i);
             if try_mount(i, 0) { return; }
         }
@@ -270,6 +310,7 @@ fn try_mount(drive_index: usize, start_lba: u32) -> bool {
         FS_READY[slot] = false;
         FS_SLOTS[slot].reader = DiskReader::new_partitioned(drive, start_lba);
         FS_SLOTS[slot].block_cache = None;
+        FS_SLOTS[slot].journal_inode_cached = None;
     }
 
     let mut sector = [0u8; 512];
@@ -315,7 +356,10 @@ fn try_mount(drive_index: usize, start_lba: u32) -> bool {
     let inodes_per_group = unsafe { FS_SLOTS[slot].superblock.inodes_per_group() };
     let blocks_per_group = unsafe { FS_SLOTS[slot].superblock.blocks_per_group() };
     let blocks_count     = unsafe { FS_SLOTS[slot].superblock.blocks_count() };
-    let group_count      = (blocks_count + blocks_per_group - 1) / blocks_per_group;
+    let first_data_block = unsafe { FS_SLOTS[slot].superblock.first_data_block() };
+    let usable           = blocks_count.saturating_sub(first_data_block);
+    let group_count      = if blocks_per_group == 0 { 0 }
+        else { (usable + blocks_per_group - 1) / blocks_per_group };
     let gd_size          = unsafe { FS_SLOTS[slot].superblock.group_desc_size() } as usize;
 
     if group_count as usize > 32 {
@@ -383,6 +427,7 @@ fn try_mount(drive_index: usize, start_lba: u32) -> bool {
 
         FS_SLOTS[slot].init_cache();
         let _ = FS_SLOTS[slot].init_journal();
+        let _ = FS_SLOTS[slot].warm_cache();
 
         if FS_SLOTS[slot].journal_active
             && !FS_SLOTS[slot]

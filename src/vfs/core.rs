@@ -774,31 +774,18 @@ impl MikuVFS {
     }
 
     pub(crate) fn evict_ext2_children(&mut self, dir_id: usize) {
-        let mut to_evict = [INVALID_ID; MAX_CHILDREN];
-        let mut evict_count = 0;
+        let mut to_evict: alloc::vec::Vec<InodeId> = alloc::vec::Vec::new();
 
-        for i in 0..MAX_CHILDREN {
-            if !self.nodes[dir_id].children.slots[i].used() {
-                continue;
-            }
-            let cid = self.nodes[dir_id].children.slots[i].id as usize;
-            if cid >= MAX_VNODES || !self.nodes[cid].active {
-                continue;
-            }
-            if self.nodes[cid].fs_type != FsType::Ext2 {
-                continue;
-            }
-            if self.nodes[cid].refcount > 0 {
-                continue;
-            }
-            if evict_count < MAX_CHILDREN {
-                to_evict[evict_count] = cid as InodeId;
-                evict_count += 1;
-            }
+        for (_, child_id) in self.nodes[dir_id].children.iter() {
+            let cid = child_id as usize;
+            if cid >= MAX_VNODES || !self.nodes[cid].active { continue; }
+            if self.nodes[cid].fs_type != FsType::Ext2    { continue; }
+            if self.nodes[cid].refcount > 0               { continue; }
+            to_evict.push(child_id);
         }
 
-        for i in 0..evict_count {
-            let cid = to_evict[i] as usize;
+        for child_id in to_evict {
+            let cid = child_id as usize;
             if cid < MAX_VNODES && self.nodes[cid].active {
                 if self.nodes[cid].is_dir() {
                     self.evict_ext2_children(cid);
@@ -902,14 +889,11 @@ impl MikuVFS {
         let eff = self.effective_node(dir_id);
         let mut count = 0usize;
 
-        for i in 0..MAX_CHILDREN {
+        for (_, child_id) in self.nodes[eff].children.iter() {
             if count >= entries.len() {
                 break;
             }
-            if !self.nodes[eff].children.slots[i].used() {
-                continue;
-            }
-            let cid = self.nodes[eff].children.slots[i].id as usize;
+            let cid = child_id as usize;
             if !self.valid_vnode(cid) {
                 continue;
             }
@@ -1227,17 +1211,19 @@ impl MikuVFS {
         buf: &mut [u8],
     ) -> VfsResult<usize> {
         let ext2_ino = self.nodes[vid].ext2_ino;
-        let size = self.nodes[vid].size;
-
-        if offset >= size {
-            return Ok(0);
-        }
-
-        let avail = (size - offset) as usize;
-        let to_read = buf.len().min(avail);
 
         let result = crate::commands::ext2_cmds::with_ext2_pub(|fs| {
             let inode = fs.read_inode(ext2_ino).map_err(|_| VfsError::IoError)?;
+            let size = inode.size() as u64;
+            
+            if size > 0 {
+                
+            }
+            if offset >= size {
+                return Ok(0usize);
+            }
+            let avail = (size - offset) as usize;
+            let to_read = buf.len().min(avail);
             let n = fs
                 .read_file(&inode, offset, &mut buf[..to_read])
                 .map_err(|_| VfsError::IoError)?;
@@ -1249,6 +1235,13 @@ impl MikuVFS {
             Some(Err(e)) => return Err(e),
             None => return Err(VfsError::IoError),
         };
+
+        let real_size = crate::commands::ext2_cmds::with_ext2_pub(|fs| {
+            fs.read_inode(ext2_ino).ok().map(|i| i.size() as u64)
+        }).flatten().unwrap_or(0);
+        if real_size > 0 {
+            self.nodes[vid].size = real_size;
+        }
 
         self.fd_table.get_mut(fd)?.offset += n as u64;
         Ok(n)

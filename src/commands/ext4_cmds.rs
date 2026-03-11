@@ -112,6 +112,7 @@ pub fn cmd_ext4_append(path: &str, text: &str)  { common::impl_append(path, text
 pub fn cmd_ext4_tree(path: &str)                { common::impl_tree(path, "ext4"); }
 pub fn cmd_ext4_du(path: &str)                  { common::impl_du(path, "ext4"); }
 pub fn cmd_ext4_cp(src: &str, dst: &str)        { common::impl_cp(src, dst, "ext4"); }
+pub fn cmd_ext4_sync()                          { common::impl_sync("ext4"); }
 
 pub fn cmd_ext4_extinfo(path: &str)             { crate::commands::ext2_cmds::cmd_ext4_extent_info(path); }
 pub fn cmd_ext4_enable_extents()                { crate::commands::ext2_cmds::cmd_ext4_enable_extents(); }

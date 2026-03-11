@@ -901,8 +901,8 @@ impl MikuFS {
             (inode.size_lo() as usize + bs - 1) / bs
         };
 
-        for b in 0..num_blocks.min(12) {
-            let phys = inode.block(b);
+        for b in 0..num_blocks {
+            let phys = self.get_file_block(&inode, b as u32)?;
             if phys == 0 {
                 continue;
             }
@@ -984,18 +984,21 @@ impl MikuFS {
 
         self.write_block_data(new_block, &block_data[..bs])?;
 
-        let block_idx = num_blocks;
-        if block_idx < 12 {
-            let mut inode = self.read_inode(dir_ino)?;
-            inode.set_block(block_idx, new_block);
-            let new_size = (block_idx + 1) as u32 * self.block_size;
-            inode.set_size(new_size);
-            let blks = inode.blocks() + (self.block_size / 512);
-            inode.set_blocks(blks);
-            let now = self.get_timestamp();
-            inode.set_mtime(now);
-            self.write_inode(dir_ino, &inode)?;
+        let logical_block_idx = num_blocks as u32;
+        let mut inode = self.read_inode(dir_ino)?;
+        if inode.uses_extents() {
+            self.ext4_ensure_block(&mut inode, dir_ino, logical_block_idx)?;
+            inode = self.read_inode(dir_ino)?;
+        } else if logical_block_idx < 12 {
+            inode.set_block(logical_block_idx as usize, new_block);
         }
+        let new_size = (logical_block_idx + 1) * self.block_size;
+        inode.set_size(new_size);
+        let blks = inode.blocks() + (self.block_size / 512);
+        inode.set_blocks(blks);
+        let now = self.get_timestamp();
+        inode.set_mtime(now);
+        self.write_inode(dir_ino, &inode)?;
 
         Ok(())
     }
@@ -1015,8 +1018,8 @@ impl MikuFS {
             (inode.size_lo() as usize + bs - 1) / bs
         };
 
-        for b in 0..num_blocks.min(12) {
-            let phys = inode.block(b);
+        for b in 0..num_blocks {
+            let phys = self.get_file_block(&inode, b as u32)?;
             if phys == 0 {
                 continue;
             }

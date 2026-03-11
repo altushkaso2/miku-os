@@ -124,9 +124,12 @@ impl BlockCache {
 
     fn find_slot(&self) -> usize {
         for i in 0..self.count {
-            if !self.entries[i].valid { return i; }
+            if !self.entries[i].valid {
+                return i;
+            }
         }
-        let mut lru_idx = 0;
+
+        let mut lru_idx = usize::MAX;
         let mut lru_val = u64::MAX;
         for i in 0..self.count {
             if !self.entries[i].dirty && self.entries[i].last_access < lru_val {
@@ -134,7 +137,24 @@ impl BlockCache {
                 lru_idx = i;
             }
         }
+        if lru_idx != usize::MAX {
+            return lru_idx;
+        }
+
+        lru_val = u64::MAX;
+        lru_idx = 0;
+        for i in 0..self.count {
+            if self.entries[i].last_access < lru_val {
+                lru_val = self.entries[i].last_access;
+                lru_idx = i;
+            }
+        }
         lru_idx
+    }
+
+    pub fn should_flush(&self) -> bool {
+        let dirty = self.entries.iter().filter(|e| e.valid && e.dirty).count();
+        dirty > self.count * 3 / 4
     }
 
     pub fn invalidate(&mut self, block_num: u32) {

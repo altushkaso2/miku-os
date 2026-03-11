@@ -14,7 +14,6 @@ pub fn resolve_parent_and_name<'a>(
     Ok((parent_ino, name))
 }
 
-
 pub fn impl_ls(
     path: &str,
     prefix: &'static str,
@@ -106,14 +105,41 @@ pub fn impl_stat(path: &str, prefix: &'static str) {
 
 pub fn impl_write(path: &str, text: &str, prefix: &'static str) {
     use crate::commands::ext2_cmds::with_ext2_pub;
-    if path.is_empty() || text.is_empty() { println!("Usage: {}write <path> <text>", prefix); return; }
+    if path.is_empty() || text.is_empty() {
+        println!("Usage: {}write <path> <text>", prefix);
+        return;
+    }
     let sw = crate::timing::Stopwatch::start();
     let result = with_ext2_pub(|fs| -> Result<u32, FsError> {
+        fs.reader.reset_io();
         let (parent_ino, filename) = resolve_parent_and_name(fs, path)?;
-        match fs.ext2_lookup_in_dir(parent_ino, filename)? {
-            Some(ino) => { fs.ext2_truncate(ino)?; fs.ext3_write_file(ino, text.as_bytes(), 0)?; Ok(ino) }
-            None      => { let ino = fs.ext3_create_file(parent_ino, filename, 0o644)?; fs.ext3_write_file(ino, text.as_bytes(), 0)?; Ok(ino) }
-        }
+        let use_extents = fs.superblock.has_extents();
+        let data = text.as_bytes();
+        let ino = match fs.ext2_lookup_in_dir(parent_ino, filename)? {
+            Some(ino) => {
+                if use_extents {
+                    fs.ext4_truncate(ino)?;
+                    fs.ext4_write_file(ino, data, 0)?;
+                } else {
+                    fs.ext2_truncate(ino)?;
+                    fs.ext2_write_file(ino, data, 0)?;
+                }
+                ino
+            }
+            None => {
+                if use_extents {
+                    let ino = fs.ext4_create_file(parent_ino, filename, 0o644)?;
+                    fs.ext4_write_file(ino, data, 0)?;
+                    ino
+                } else {
+                    let ino = fs.ext2_create_file(parent_ino, filename, 0o644)?;
+                    fs.ext2_write_file(ino, data, 0)?;
+                    ino
+                }
+            }
+        };
+        crate::serial_println!("[io] ata_commands={}", fs.reader.io_count);
+        Ok(ino)
     });
     let ms = sw.elapsed_ms();
     match result {
@@ -129,7 +155,11 @@ pub fn impl_mkdir(path: &str, prefix: &'static str) {
     if path.is_empty() { println!("Usage: {}mkdir <path>", prefix); return; }
     let result = with_ext2_pub(|fs| -> Result<u32, FsError> {
         let (parent_ino, dirname) = resolve_parent_and_name(fs, path)?;
-        fs.ext3_create_dir(parent_ino, dirname, 0o755)
+        if fs.superblock.has_extents() {
+            fs.ext4_create_dir(parent_ino, dirname, 0o755)
+        } else {
+            fs.ext2_create_dir(parent_ino, dirname, 0o755)
+        }
     });
     match result {
         Some(Ok(ino)) => print_success!("  created dir inode {}", ino),
@@ -143,7 +173,15 @@ pub fn impl_rm(path: &str, prefix: &'static str) {
     if path.is_empty() { println!("Usage: {}rm <path>", prefix); return; }
     let result = with_ext2_pub(|fs| -> Result<(), FsError> {
         let (parent_ino, name) = resolve_parent_and_name(fs, path)?;
-        fs.ext3_delete_file(parent_ino, name)
+        let inode = {
+            let ino = fs.resolve_path(path)?;
+            fs.read_inode(ino)?
+        };
+        if inode.uses_extents() {
+            fs.ext4_delete_file(parent_ino, name)
+        } else {
+            fs.ext2_delete_file(parent_ino, name)
+        }
     });
     match result {
         Some(Ok(())) => print_success!("  deleted"),
@@ -157,7 +195,15 @@ pub fn impl_rmdir(path: &str, prefix: &'static str) {
     if path.is_empty() { println!("Usage: {}rmdir <path>", prefix); return; }
     let result = with_ext2_pub(|fs| -> Result<(), FsError> {
         let (parent_ino, name) = resolve_parent_and_name(fs, path)?;
-        fs.ext3_delete_dir(parent_ino, name)
+        let inode = {
+            let ino = fs.resolve_path(path)?;
+            fs.read_inode(ino)?
+        };
+        if inode.uses_extents() {
+            fs.ext4_delete_dir(parent_ino, name)
+        } else {
+            fs.ext2_delete_dir(parent_ino, name)
+        }
     });
     match result {
         Some(Ok(())) => print_success!("  removed dir"),
@@ -168,13 +214,16 @@ pub fn impl_rmdir(path: &str, prefix: &'static str) {
 
 pub fn impl_append(path: &str, text: &str, prefix: &'static str) {
     use crate::commands::ext2_cmds::with_ext2_pub;
-    if path.is_empty() || text.is_empty() { println!("Usage: {}append <path> <text>", prefix); return; }
+    if path.is_empty() || text.is_empty() {
+        println!("Usage: {}append <path> <text>", prefix);
+        return;
+    }
     let result = with_ext2_pub(|fs| -> Result<usize, FsError> {
         let ino = fs.resolve_path(path)?;
-        if prefix == "ext2" {
-            fs.ext2_append_file(ino, text.as_bytes())
+        if fs.superblock.has_extents() {
+            fs.ext4_append_file(ino, text.as_bytes())
         } else {
-            fs.ext3_append_file(ino, text.as_bytes())
+            fs.ext2_append_file(ino, text.as_bytes())
         }
     });
     match result {
@@ -261,4 +310,64 @@ pub fn impl_info(prefix: &'static str) {
         }
         None => print_error!("  {} not mounted", prefix),
     }
+}
+
+pub fn impl_sync(prefix: &'static str) {
+    use crate::commands::ext2_cmds::with_ext2_pub;
+    let sw = crate::timing::Stopwatch::start();
+    let result = with_ext2_pub(|fs| -> Result<(u32, u32), FsError> {
+        fs.reader.reset_io();
+        
+        if fs.journal_active {
+            let dirty_count = match fs.block_cache {
+                Some(ref c) => c.dirty_entries(),
+                None => 0,
+            };
+            if dirty_count > 0 || fs.superblock_dirty
+                || fs.groups_dirty.iter().any(|&d| d)
+            {
+                fs.ext3_begin_txn()?;
+                
+                if let Some(ref c) = fs.block_cache {
+                    let dirty = c.get_dirty_blocks();
+                    for &(block_num, _) in dirty.iter().take(64) {
+                        let _ = fs.ext3_journal_current_block(block_num);
+                    }
+                }
+                fs.ext3_commit_txn()?;
+            }
+        }
+        
+        fs.sync_dirty_blocks()?;
+        fs.flush_all_dirty_metadata()?;
+        fs.reader.flush_drive();
+        
+        let io = fs.reader.io_count;
+        let dirty_left = match fs.block_cache {
+            Some(ref c) => c.dirty_entries() as u32,
+            None => 0,
+        };
+        Ok((io, dirty_left))
+    });
+    
+    let ms = sw.elapsed_ms();
+    match result {
+        Some(Ok((io, dirty))) => {
+            print_success!("  synced [{}ms] ({} ATA cmds, {} dirty remaining)", ms, io, dirty);
+            crate::serial_println!("[timing] sync disk={}ms io={}", ms, io);
+        }
+        Some(Err(e)) => print_error!("  sync: {:?}", e),
+        None => print_error!("  {} not mounted", prefix),
+    }
+}
+
+pub fn periodic_flush_check() {
+    use crate::commands::ext2_cmds::is_ext2_ready;
+    use crate::commands::ext2_cmds::with_ext2_pub;
+
+    if !is_ext2_ready() { return; }
+
+    with_ext2_pub(|fs| {
+        fs.check_periodic_sync();
+    });
 }

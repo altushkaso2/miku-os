@@ -77,7 +77,8 @@ impl FsLayout {
             .min(32)
             .max(1);
 
-        let total_blocks   = total_blocks_real;
+        let total_blocks = (first_data_block + group_count * blocks_per_group)
+            .min(total_blocks_real);
         let total_inodes   = group_count * inodes_per_group;
         let reserved_blocks = total_blocks / 20;
 
@@ -174,3 +175,4 @@ impl FsLayout {
         (g, local)
     }
 }
+

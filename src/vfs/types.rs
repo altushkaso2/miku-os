@@ -4,7 +4,6 @@ pub const MAX_MOUNTS: usize = 8;
 pub const MAX_FDS: usize = 32;
 pub const MAX_OPEN_FILES: usize = 32;
 pub const MAX_DATA_PAGES: usize = 128;
-pub const MAX_CHILDREN: usize = 32;
 pub const MAX_XATTRS_PER_NODE: usize = 8;
 pub const MAX_LOCKS: usize = 16;
 pub const MAX_WATCHES: usize = 8;

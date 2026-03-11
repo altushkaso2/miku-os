@@ -1,10 +1,10 @@
 <div align="center">
 
-# 💙 Miku OS
+# Miku OS
 
 **An experimental operating system kernel written in Rust**
 
-*Powered by Rust and a few developers :D*
+*Powered by Rust and a small team of developers :D*
 
 <img src="https://raw.githubusercontent.com/altushkaso2/miku-os/main/docs/miku.png" width="220" alt="Miku Logo">
 
@@ -17,20 +17,20 @@
 
 ---
 
-> 🌐 **Documentation:** [🇷🇺 Русский](Russian_README.md) | [🇬🇧 English](English_README.md) | [🇯🇵 日本語](Japanese_README.md)
+> **Documentation:** [Russian](docs/Russian_README.md) | [English](docs/English_README.md) | [Japanese](Japanese_README.md)
 
 ---
 
 ## About
 
 **Miku OS** is a UNIX-like operating system built from scratch in a `no_std` environment.
-No standard library (`libc`) - full control over hardware and memory architecture.
+It uses no standard library (`libc`) whatsoever, giving full control over hardware and memory architecture.
 
-> All code is written in Rust. Assembly is used only for the bootloader, syscall handler, and context switch.
+> All code is written in Rust. Assembly is used only in the bootloader, syscall handler, and context switch routines.
 
 ---
 
-## Technical Specifications
+## Technical Specification
 
 ### Kernel
 
@@ -53,21 +53,18 @@ No standard library (`libc`) - full control over hardware and memory architectur
 
 #### Frame Allocator
 
-- **Bitmap allocator** - up to 4M frames (16 GB RAM), 1 bit = 1 frame at 4KB
-- **free_hint** and **contiguous_hint** - accelerate free and contiguous frame searches
-- **Contiguous alloc** - allocate N frames in a single request
-- **Regions** - dynamic RAM range registration from Multiboot2 memory map
+- Bitmap allocator - up to 4M frames (16 GB RAM), 1 bit = 1 frame of 4 KB
+- `free_hint` and `contiguous_hint` - fast search for free and contiguous frames
+- Contiguous alloc - reserve N frames in one request
+- Regions - dynamic RAM ranges registered from Multiboot2 memory map
 
 #### Emergency Pool
-
-Reserved frames for swap-in inside the page fault handler:
 
 | Parameter | Value |
 |:--|:--|
 | **Pool size** | 64 frames (256 KB) |
-| **Purpose** | Swap-in only, inside page fault handler |
-| **Refill** | Timer ISR calls `refill_emergency_pool_tick()` at 250 Hz |
-| **Reason** | Normal evict_one() calls ATA I/O - cannot be used inside fault handler |
+| **Purpose** | swap-in inside page fault handler only |
+| **Refill** | Timer ISR calls `refill_emergency_pool_tick()` every 250 Hz |
 
 ```
 alloc_frame()           - normal alloc from PMM
@@ -81,50 +78,37 @@ alloc_for_swapin()      - emergency pool only (fault context)
 <details>
 <summary><b>Virtual Memory (VMM)</b></summary>
 
-- **4-level page tables** (PML4 → PDP → PD → PT)
-- **HHDM** - Higher Half Direct Map for kernel access to physical memory (`0xFFFF800000000000`)
-- **mark_swapped()** - writes swap PTE when a page is swapped out
-- Supports ring 0 / ring 3 mappings
+- 4-level page tables (PML4 -> PDP -> PD -> PT)
+- HHDM - Higher Half Direct Map (`0xFFFF800000000000`)
+- `mark_swapped()` - writes swap PTE when a page is swapped out
+- ring 0 / ring 3 mapping support
 
 </details>
 
 <details>
 <summary><b>Swap</b></summary>
 
-Full swap implementation on a block device (ATA disk):
-
 #### Reverse Mapping (swap_map)
 
-- Records `(cr3, virt_addr, age, pinned)` for each physical frame
+- Records `(cr3, virt_addr, age, pinned)` per physical frame
 - Tracks up to 512K frames (2 GB RAM)
 
 #### Eviction Algorithm - Clock Sweep
 
 ```
-Pass 1: find frames with age >= 3 (oldest)
-Pass 2: emergency - take any unpinned frame
+Pass 1: find frames with age >= 3 (oldest first)
+Pass 2: emergency - grab any unpinned frame
 ```
 
 - `touch(phys)` - resets age to 1 on page access
-- `age_all()` - increments age of all frames on timer tick
+- `age_all()` - increments all frame ages via timer
 
 #### Swap PTE Encoding
 
 ```
-bit 0     = 0  (PRESENT=0 - page is not in memory)
-bit 1     = 1  (SWAP_MARKER - distinguishes from unmapped)
+bit 0     = 0  (PRESENT=0)
+bit 1     = 1  (SWAP_MARKER)
 bits 12.. = swap slot number
-```
-
-#### Eviction Flow
-
-```
-evict_one():
-  1. pick_victim() from swap_map + set pinned=true
-  2. swap_out_internal() → write page to disk
-  3. vmm::mark_swapped() → update PTE
-  4. swap_map::untrack() → remove from reverse map
-  5. pmm::free_frame() → return frame
 ```
 
 </details>
@@ -135,74 +119,70 @@ evict_one():
 
 | Parameter | Value |
 |:--|:--|
-| **Algorithm** | CFS (Completely Fair Scheduler), preemptive |
+| **Type** | CFS (Completely Fair Scheduler), preemptive |
 | **Max processes** | 4096 |
 | **Timer frequency** | 250 Hz (PIT) |
 | **CPU window** | 250 ticks (1 second) |
 | **Stack** | 512 KB per process |
-| **States** | `Ready`, `Running`, `Sleeping`, `Blocked`, `Dead` |
-| **Implementation** | Lock-free - ISR uses only atomics, zero mutexes |
+| **States** | Ready / Running / Sleeping / Blocked / Dead |
+| **Implementation** | Lock-free - ISR uses atomics only, no mutexes |
 
-Context switch is implemented in naked asm. `schedule_from_isr` acquires zero mutexes.
+Context switch implemented in naked asm. `schedule_from_isr` acquires zero mutexes.
 
 ---
 
-### System Calls
-
-Implemented via `SYSCALL/SYSRET` (MSR), naked asm handler with stack switching via `swapgs`.
+### Syscalls
 
 | Nr | Name | Description |
 |:--:|:--|:--|
-| **0** | `sys_write` | Write to stdout/stderr (fd 1/2), up to 4096 bytes |
-| **1** | `sys_read` | Read (stub) |
-| **2** | `sys_exit` | Terminate process + yield |
-| **3** | `sys_sleep` | Sleep N ticks |
-| **4** | `sys_getpid` | Get current process PID |
+| **0** | `sys_write` | write to stdout/stderr (fd 1/2), up to 4096 bytes |
+| **1** | `sys_read` | read (stub) |
+| **2** | `sys_exit` | exit process + yield |
+| **3** | `sys_sleep` | sleep for N ticks |
+| **4** | `sys_getpid` | get current process PID |
 
 ---
 
 ### Network Stack
 
-A complete network stack built from scratch with no third-party libraries.
-
 <details>
 <summary><b>Network Card Drivers</b></summary>
 
-| Driver | Chip |
+| Driver | Chips |
 |:--|:--|
 | **Intel E1000** | 82540EM, 82545EM, 82574L, 82579LM, I217 |
 | **Realtek RTL8139** | RTL8139 |
 | **Realtek RTL8168** | RTL8168, RTL8169 |
-| **VirtIO Net** | QEMU/KVM virtual network card |
+| **VirtIO Net** | QEMU/KVM virtual NIC |
 
-All drivers are automatically detected via PCI scanner.
+All drivers are auto-detected by the PCI scanner.
 
 </details>
 
 <details>
 <summary><b>Protocols</b></summary>
 
-| Layer | Protocol |
+| Layer | Protocols |
 |:--|:--|
 | **L2** | Ethernet, ARP (with cache table) |
 | **L3** | IPv4, ICMP |
-| **L4** | UDP, TCP (with connection state management) |
+| **L4** | UDP, TCP (with connection state machine) |
 | **Application** | DHCP, DNS, NTP, HTTP, HTTP/2, Traceroute |
 | **Security** | TLS 1.3 (ECDHE + RSA + AES-GCM) |
 
 </details>
 
 <details>
-<summary><b>TLS 1.3 - complete implementation from scratch</b></summary>
+<summary><b>TLS 1.3 - Full implementation from scratch</b></summary>
 
-- **ECDH** - X25519 key exchange (`tls_ecdh.rs`)
-- **RSA** - ASN.1/DER certificate parsing, PKCS#1 signature verification (`tls_rsa.rs`)
-- **BigNum** - custom big-number arithmetic for RSA 2048-bit (`tls_bignum.rs`)
-- **AES-GCM** - authenticated symmetric encryption (`tls_gcm.rs`)
-- **SHA-256, HMAC, HKDF** - hashing, key derivation (`tls_crypto.rs`)
-- **Handshake** - ClientHello → ServerHello → Certificate → Finished (`tls.rs`)
+- ECDH - X25519 key exchange (`tls_ecdh.rs`)
+- RSA - ASN.1/DER certificate parsing, PKCS#1 signature verification (`tls_rsa.rs`)
+- BigNum - custom big-integer arithmetic for RSA 2048-bit (`tls_bignum.rs`)
+- AES-GCM - authenticated symmetric encryption (`tls_gcm.rs`)
+- SHA-256, HMAC, HKDF - hashing, key derivation (`tls_crypto.rs`)
+- Handshake - ClientHello -> ServerHello -> Certificate -> Finished
 
-No external crates, fully in `no_std` environment.
+No external crates, implemented from scratch in `no_std`.
 
 </details>
 
@@ -218,14 +198,16 @@ No external crates, fully in `no_std` environment.
 | Parameter | Value |
 |:--|:--|
 | **VNodes** | 256 |
-| **Simultaneous open files** | 32 |
+| **Open files** | 32 simultaneous |
 | **Mount points** | 8 |
-| **Children per directory** | 32 |
+| **Children per directory** | Dynamic (no limit) |
 
-- **Node types**: `Regular`, `Directory`, `Symlink`, `CharDevice`, `BlockDevice`, `Pipe`, `Fifo`, `Socket`
+Children are managed by a dynamic `Vec`-based hashmap. Initial capacity is 16 slots, automatically doubling at 75% load. The old fixed limit of 32 children per directory has been removed.
+
+- Node types: `Regular`, `Directory`, `Symlink`, `CharDevice`, `BlockDevice`, `Pipe`, `Fifo`, `Socket`
 - Full metadata: permissions, uid/gid, timestamps, size, nlinks
 
-#### Caches
+#### Cache
 
 | Cache | Size |
 |:--|:--|
@@ -234,15 +216,15 @@ No external crates, fully in `no_std` environment.
 
 #### Navigation
 
-- **Path walking** - depth up to 32 components
-- **Symlink resolution** - loop protection (8 levels)
-- **FNV32 hash** - name hashing for O(1) lookup
+- Path walking - max depth 32 components
+- Symlink resolution - loop protection (8 levels)
+- FNV32 hash - O(1) name lookup
 
 #### Security
 
 - UNIX permission model: `owner/group/other`, `setuid/setgid/sticky`
 - Security labels (MAC), byte and inode quotas
-- File locks: shared/exclusive with deadlock detection (up to 16 locks)
+- File locks: shared/exclusive with deadlock detection (max 16 locks)
 
 #### Advanced Features
 
@@ -250,9 +232,9 @@ No external crates, fully in `no_std` environment.
 |:--|:--|
 | **VFS journal** | 16 operation log entries |
 | **Xattr** | 8 extended attributes per node |
-| **Notify events** | inotify-like subsystem (up to 16 events) |
-| **Version store** | 16 file snapshots |
-| **CAS store** | Content-addressed deduplication (up to 16 objects) |
+| **Notify events** | inotify-like subsystem (max 16 events) |
+| **Version store** | 16 snapshots per file |
+| **CAS store** | content-addressed deduplication (max 16 objects) |
 | **Block I/O queue** | 8 async requests |
 
 </details>
@@ -285,55 +267,75 @@ No external crates, fully in `no_std` environment.
 
 #### Write
 
-- Create and delete files, directories, symbolic links
-- Bitmap allocator for blocks and inodes (with preferred group support)
-- Recursive deletion
+- Create and delete files, directories, symlinks
+- Bitmap allocator for blocks and inodes (preferred-group aware)
+- Recursive delete
 
 #### Ext3 Journal (JBD2)
 
-- Journal creation (`ext2 → ext3` conversion)
-- Transaction writes: descriptor block, commit block, revoke block
-- Recovery - replays incomplete transactions on mount
+- Journal creation (`ext2 -> ext3` conversion)
+- Transaction writing: descriptor block, commit block, revoke block
+- Recovery - replay incomplete transactions on mount
 
 #### Utilities
 
-- `fsck` - integrity check
-- `tree` - directory tree visualization
-- `du`, `cp`, `mv`, `chmod`, `chown`, hard links
+- `fsck`, `tree`, `du`, `cp`, `mv`, `chmod`, `chown`, hard links
 
 </details>
 
 ---
 
-### Shell
+### Shell Commands
 
-| Feature | Description |
+#### Unified ext Commands (auto-detect mounted FS version)
+
+| Command | Syntax | Description |
+|:--|:--|:--|
+| `ext2mount` | `ext2mount [drive]` | Mount ext2 |
+| `ext3mount` | `ext3mount [drive]` | Mount ext3 |
+| `ext4mount` | `ext4mount [drive]` | Mount ext4 |
+| `extls` | `extls [path]` | List directory |
+| `extcat` | `extcat <path>` | Show file contents |
+| `extstat` | `extstat <path>` | Show inode details |
+| `extinfo` | `extinfo` | Show superblock info |
+| `extwrite` | `extwrite <path> <text>` | Write to file (overwrites) |
+| `extappend` | `extappend <path> <text>` | Append text to file |
+| `exttouch` | `exttouch <path>` | Create empty file |
+| `extmkdir` | `extmkdir <path>` | Create directory |
+| `extrm` | `extrm [-rf] <path>` | Delete file (or recursively) |
+| `extrmdir` | `extrmdir <path>` | Delete empty directory |
+| `extmv` | `extmv <path> <newname>` | Rename file |
+| `extcp` | `extcp <src> <dst>` | Copy file |
+| `extln -s` | `extln -s <target> <link>` | Create symbolic link |
+| `extlink` | `extlink <existing> <link>` | Create hard link |
+| `extchmod` | `extchmod <mode> <path>` | Change permissions |
+| `extchown` | `extchown <uid> <gid> <path>` | Change owner |
+| `extdu` | `extdu [path]` | Show disk usage |
+| `exttree` | `exttree [path]` | Show directory tree |
+| `extfsck` | `extfsck` | Check filesystem integrity |
+| `extcache` | `extcache` | Block cache statistics |
+| `extcacheflush` | `extcacheflush` | Flush cache to disk |
+| `extsync` / `sync` | `sync` | Flush everything to disk |
+
+> Legacy commands (`ext2ls`, `ext3cat`, `ext4write`, etc.) remain as aliases for backward compatibility.
+
+#### VFS Commands
+
+| Command | Description |
 |:--|:--|
-| **Input** | Per-character processing, mid-line insertion |
-| **Navigation** | `← → Home End Delete Backspace` |
-| **History** | 16 commands, `↑ ↓` to navigate |
-| **Colors** | Miku theme: teal, pink, white |
-| **Font** | Custom bitmap 9x16 + noto-sans-mono fallback |
-| **Console** | Framebuffer rendering, auto-scroll, per-character RGB |
-
----
-
-### Console and Framebuffer
-
-<details>
-<summary><b>Expand</b></summary>
-
-Rendering is fully manual with no graphics libraries:
-
-- **Dual rendering** - custom bitmap glyphs 9x16 + noto-sans-mono fallback
-- **Shadow buffer** - per-row u32 buffer for blit acceleration (bpp=4)
-- **BGR/RGB support** - auto-detects framebuffer byte order
-- **Scroll** - memmove of pixel rows + clear last row
-- **Per-character color** - each Cell independently stores `(ch, r, g, b)`
-- **Cursor** - 2-pixel-wide vertical cursor with custom color
-- **COLOR_MIKU** 💙 - default teal color
-
-</details>
+| `ls [path]` | List directory (ext + VFS combined) |
+| `cd <path>` | Change directory |
+| `pwd` | Print working directory |
+| `mkdir <path>` | Create directory |
+| `touch <path>` | Create file in RAM |
+| `cat <path>` | Show file contents |
+| `write <path> <text>` | Write to file in RAM |
+| `rm [-rf] <path>` | Remove file or directory |
+| `rmdir <path>` | Remove directory (ext-aware) |
+| `mv <old> <new>` | Rename |
+| `stat <path>` | File information |
+| `chmod <mode> <path>` | Change permissions |
+| `df` | Filesystem info |
 
 ---
 
@@ -343,14 +345,9 @@ Rendering is fully manual with no graphics libraries:
 |:--|:--|
 | **Mode** | PIO (Programmed I/O) |
 | **Operations** | Sector read/write (512 bytes) |
-| **Drives** | 4: Primary/Secondary x Master/Slave |
-| **Protection** | Cache flush after write, timeout 50K iterations |
-
----
-
-## Commands
-
-Full command list is available in the **[project Wiki](https://github.com/altushkaso2/miku-os/wiki)**.
+| **Disks** | 4: Primary/Secondary x Master/Slave |
+| **Protection** | Cache flush after write, 50K iteration timeout |
+| **Addressing** | LBA28 (up to 128 GB) |
 
 ---
 
@@ -363,7 +360,7 @@ Full command list is available in the **[project Wiki](https://github.com/altush
 | **Rust nightly** | `no_std` + unstable compiler features |
 | **QEMU** | x86_64 machine emulation |
 | **grub-mkrescue** | Bootable ISO creation |
-| **Cargo** | Building the builder and kernel |
+| **Cargo** | Kernel build |
 
 ### Steps
 
@@ -373,15 +370,15 @@ cd miku-os/builder
 cargo run
 ```
 
-Builder handles everything automatically:
+The builder does everything automatically:
 
 ```
-Low RAM mode? (y/N)
-[1/5] Compiling miku-os kernel
-[2/5] Creating file structure (enter disk and swap sizes)
-[3/5] Generating system image (miku-os.iso)
-[4/5] Preparing disks
-[5/5] Launching QEMU (optional (y/N))
+RAM saving mode? (y/N)
+[1/5] Compile miku-os kernel
+[2/5] Create file structure (enter disk size and swap size)
+[3/5] Generate system image (miku-os.iso)
+[4/5] Prepare disk
+[5/5] Launch QEMU (optional (y/N))
 ```
 
 > First build takes a few minutes to download dependencies and compile the kernel.
@@ -400,26 +397,26 @@ Low RAM mode? (y/N)
   <br>
   <sub>Author and sole developer of Miku OS</sub>
   <br>
-  <sub>Kernel · VFS · MikuFS · Shell · Network · TLS · Scheduler · PMM · VMM · Swap</sub>
+  <sub>Kernel - VFS - MikuFS - Shell - Network - TLS - Scheduler - PMM - VMM - Swap</sub>
 </div>
 
 ---
 
 ## From the Author
 
-> It all started with a simple question: "What if I wrote an OS myself?"
-> Since then it became a hobby. Every evening - a new feature, a new bug, a new discovery.
-> From the first character on screen to a full TLS 1.3 stack and a lock-free scheduler - all written by hand.
-> No ready-made libraries or wrappers. Just Rust, documentation, and persistence :D
+> It all started with a simple question: what would happen if I wrote my own OS?
+> Since then it has become a hobby. Every evening - new features, new bugs, new discoveries.
+> From the first character on screen to a full TLS 1.3 stack and a lock-free scheduler, all written by hand.
+> No ready-made libraries, no wrappers. Just Rust, documentation, and persistence :D
 >
-> The project keeps growing. Next up: ELF loader, userspace, and user processes.
-> But that's the next chapter of Miku OS :)
+> The project keeps growing. Next up: ELF loader, userspace, user processes.
+> But that is a story for the next chapter of Miku OS :)
 
 <div align="center">
 
 **Miku OS** - a pure OS written from scratch in Rust
 
-*With love 💙*
+*With love*
 
 <img src="https://raw.githubusercontent.com/altushkaso2/miku-os/main/docs/miku.png" width="220" alt="Miku Logo">
 

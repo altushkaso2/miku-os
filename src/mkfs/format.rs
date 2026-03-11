@@ -57,23 +57,30 @@ impl Writer {
         }
         let spb      = block_size / 512;
         let base_lba = block * spb;
-        for s in 0..spb {
-            let off = (s * 512) as usize;
-            let mut sec = [0u8; 512];
-            sec.copy_from_slice(&data[off..off + 512]);
-            self.write_sector(base_lba + s, &sec)?;
-        }
-        Ok(())
+        self.drive
+            .write_sectors(self.start_lba + base_lba, &data[..block_size as usize], spb as u8)
+            .map_err(MkfsError::Io)
     }
 
     fn zero_block(&mut self, block: u32, block_size: u32, total_blocks: u32)
         -> Result<(), MkfsError>
     {
         if block >= total_blocks { return Ok(()); }
-        let spb = block_size / 512;
+        let spb      = block_size / 512;
         let base_lba = block * spb;
-        for s in 0..spb {
-            self.zero_sector(base_lba + s)?;
+        self.zero_lba_range(base_lba, spb)
+    }
+
+    fn zero_lba_range(&mut self, start_lba: u32, count: u32) -> Result<(), MkfsError> {
+        const CHUNK: u32 = 127;
+        static ZEROS: [u8; 127 * 512] = [0u8; 127 * 512];
+        let mut done = 0u32;
+        while done < count {
+            let n = (count - done).min(CHUNK) as u8;
+            self.drive
+                .write_sectors(self.start_lba + start_lba + done, &ZEROS[..n as usize * 512], n)
+                .map_err(MkfsError::Io)?;
+            done += n as u32;
         }
         Ok(())
     }
@@ -203,11 +210,15 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
     let uuid = make_uuid(now ^ (params.drive_index as u32).wrapping_mul(0xDEADBEEF));
 
     crate::serial_println!("[mkfs] step 3: zeroing metadata");
+    let spb = lay.sectors_per_block;
     for g in 0..lay.group_count as usize {
         let gl = &lay.groups[g];
-        for blk in gl.start_block..gl.data_start.min(tb) {
-            w.zero_block(blk, lay.block_size, tb)?;
-        }
+        let first_blk = gl.start_block;
+        let last_blk  = gl.data_start.min(tb);
+        if last_blk <= first_blk { continue; }
+        let start_lba = first_blk * spb;
+        let count     = (last_blk - first_blk) * spb;
+        w.zero_lba_range(start_lba, count)?;
     }
 
     crate::serial_println!("[mkfs] step 4: block bitmaps");
@@ -558,6 +569,7 @@ fn write_raw_inode(
     while rem > 0 {
         let chunk = (512 - cur_off).min(rem);
         let mut sec = [0u8; 512];
+        w.drive.read_sector(w.start_lba + cur_lba, &mut sec).map_err(MkfsError::Io)?;
         sec[cur_off..cur_off + chunk].copy_from_slice(&raw[dpos..dpos + chunk]);
         w.write_sector(cur_lba, &sec)?;
         dpos    += chunk;

@@ -130,6 +130,7 @@ impl MikuFS {
         let now = self.get_timestamp();
         inode.set_mtime(now);
         self.write_inode(inode_num, &inode)?;
+        self.sync()?;
 
         Ok(done)
     }
@@ -158,6 +159,7 @@ impl MikuFS {
 
         self.write_inode(new_ino, &inode)?;
         self.add_dir_entry(parent_ino, name, new_ino, FT_REG_FILE)?;
+        self.sync()?;
 
         Ok(new_ino)
     }
@@ -224,6 +226,7 @@ impl MikuFS {
             self.groups[gidx].inc_used_dirs();
             self.flush_group_desc(gidx)?;
         }
+        self.sync()?;
 
         Ok(new_ino)
     }
@@ -273,6 +276,7 @@ impl MikuFS {
 
         self.write_inode(new_ino, &inode)?;
         self.add_dir_entry(parent_ino, name, new_ino, FT_SYMLINK)?;
+        self.sync()?;
 
         Ok(new_ino)
     }
@@ -295,6 +299,7 @@ impl MikuFS {
 
         self.free_inode(target_ino)?;
         self.remove_dir_entry(parent_ino, name)?;
+        self.sync()?;
 
         Ok(())
     }
@@ -332,6 +337,7 @@ impl MikuFS {
             self.groups[gidx].dec_used_dirs();
             self.flush_group_desc(gidx)?;
         }
+        self.sync()?;
 
         Ok(())
     }
@@ -493,6 +499,7 @@ impl MikuFS {
         let now = self.get_timestamp();
         inode.set_mtime(now);
         self.write_inode(inode_num, &inode)?;
+        self.sync()?;
 
         Ok(())
     }
@@ -521,6 +528,7 @@ impl MikuFS {
 
         self.remove_dir_entry(parent_ino, old_name)?;
         self.add_dir_entry(parent_ino, new_name, target_ino, ft)?;
+        self.sync()?;
 
         Ok(())
     }

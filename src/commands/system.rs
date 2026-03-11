@@ -24,7 +24,7 @@ pub fn cmd_info() {
     let used_ram_kb   = pmm_used * 4 + heap_used / 1024;
     let free_ram_kb   = usable_ram_kb.saturating_sub(used_ram_kb);
 
-    cprintln!(57, 197, 187,  "  MikuOS v0.1.0");
+    cprintln!(57, 197, 187,  "  MikuOS v0.1.2");
     cprintln!(230, 240, 240, "  VNodes: {}/{}", vn, crate::vfs::MAX_VNODES);
     cprintln!(230, 240, 240, "  Mounts: {}", mn);
     cprintln!(230, 240, 240, "  Heap:   {} / {} KB", heap_used / 1024, heap_total / 1024);
@@ -100,14 +100,30 @@ pub fn cmd_heap() {
 }
 
 pub fn cmd_poweroff() {
-    cprintln!(255, 105, 140, "  Shutting down...");
-    crate::serial_println!("[kern] poweroff requested");
+    crate::serial_println!("[kern] poweroff requested - syncing filesystems...");
+    if crate::commands::ext2_cmds::is_ext2_ready() {
+        crate::commands::ext2_cmds::with_ext2_pub(|fs| {
+            if fs.has_dirty_data() {
+                let _ = fs.periodic_sync();
+                crate::serial_println!("[kern] filesystem synced");
+            }
+        });
+    }
+    crate::serial_println!("[kern] poweroff");
     crate::power::shutdown();
 }
 
 pub fn cmd_reboot() {
-    cprintln!(57, 197, 187, "  Rebooting...");
-    crate::serial_println!("[kern] reboot requested");
+    crate::serial_println!("[kern] reboot requested - syncing filesystems...");
+    if crate::commands::ext2_cmds::is_ext2_ready() {
+        crate::commands::ext2_cmds::with_ext2_pub(|fs| {
+            if fs.has_dirty_data() {
+                let _ = fs.periodic_sync();
+                crate::serial_println!("[kern] filesystem synced");
+            }
+        });
+    }
+    crate::serial_println!("[kern] reboot");
     crate::power::reboot();
 }
 

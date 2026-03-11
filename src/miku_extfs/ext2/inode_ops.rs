@@ -3,8 +3,39 @@ use crate::miku_extfs::{FsError, MikuFS};
 
 impl MikuFS {
     pub fn read_inode(&mut self, inode_num: u32) -> Result<Inode, FsError> {
-        self.reader
-            .read_inode(inode_num, &self.superblock, &self.groups)
+        if inode_num == 0 {
+            return Err(FsError::InvalidInode);
+        }
+        let idx = inode_num - 1;
+        let group = (idx / self.inodes_per_group) as usize;
+        let local_idx = idx % self.inodes_per_group;
+        if group >= self.groups.len() {
+            return Err(FsError::InvalidInode);
+        }
+        let inode_table_block = self.groups[group].inode_table();
+        let inode_size = self.inode_size();
+        let bs = self.block_size as usize;
+        let byte_offset = local_idx as u64 * inode_size as u64;
+        let block_off = (byte_offset / bs as u64) as u32;
+        let offset_in_block = (byte_offset % bs as u64) as usize;
+        let phys_block = inode_table_block + block_off;
+        let read_size = (inode_size as usize).min(256);
+        let mut inode = Inode::zeroed();
+        inode.on_disk_size = read_size as u16;
+        let mut buf = [0u8; 4096];
+        self.read_block_into(phys_block, &mut buf[..bs])?;
+        if offset_in_block + read_size <= bs {
+            inode.data[..read_size]
+                .copy_from_slice(&buf[offset_in_block..offset_in_block + read_size]);
+        } else {
+            let first_part = bs - offset_in_block;
+            inode.data[..first_part].copy_from_slice(&buf[offset_in_block..bs]);
+            self.read_block_into(phys_block + 1, &mut buf[..bs])?;
+            let remaining = read_size - first_part;
+            inode.data[first_part..first_part + remaining]
+                .copy_from_slice(&buf[..remaining]);
+        }
+        Ok(inode)
     }
 
     pub fn get_file_block(&mut self, inode: &Inode, logical_block: u32) -> Result<u32, FsError> {
@@ -188,6 +219,18 @@ impl MikuFS {
         Ok(new_block)
     }
 
+    pub fn read_indirect_entry(&mut self, block_num: u32, index: u32) -> Result<u32, FsError> {
+        let ptrs_per_block = self.block_size / 4;
+        if index >= ptrs_per_block {
+            return Err(FsError::InvalidBlock);
+        }
+        let bs = self.block_size as usize;
+        let mut buf = [0u8; 4096];
+        self.read_block_into(block_num, &mut buf[..bs])?;
+        let off = index as usize * 4;
+        Ok(u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]))
+    }
+
     pub fn write_indirect_entry(
         &mut self,
         block_num: u32,
@@ -198,41 +241,13 @@ impl MikuFS {
         if index >= ptrs_per_block {
             return Err(FsError::InvalidBlock);
         }
-
-        let byte_offset = index as usize * 4;
-        let sector_in_block = byte_offset / 512;
-        let offset_in_sector = byte_offset % 512;
-        let lba = self.block_to_lba(block_num) + sector_in_block as u32;
-
-        let mut sector = [0u8; 512];
-        self.reader.read_sector(lba, &mut sector)?;
-        sector[offset_in_sector..offset_in_sector + 4].copy_from_slice(&value.to_le_bytes());
-        self.reader.write_sector(lba, &sector)?;
+        let bs = self.block_size as usize;
+        let mut buf = [0u8; 4096];
+        self.read_block_into(block_num, &mut buf[..bs])?;
+        let off = index as usize * 4;
+        buf[off..off + 4].copy_from_slice(&value.to_le_bytes());
+        self.write_block_data(block_num, &buf[..bs])?;
         Ok(())
-    }
-
-    pub fn read_indirect_entry(&mut self, block_num: u32, index: u32) -> Result<u32, FsError> {
-        let ptrs_per_block = self.block_size / 4;
-        if index >= ptrs_per_block {
-            return Err(FsError::InvalidBlock);
-        }
-
-        let byte_offset = index as usize * 4;
-        let sector_in_block = byte_offset / 512;
-        let offset_in_sector = byte_offset % 512;
-        let lba = self.block_to_lba(block_num) + sector_in_block as u32;
-
-        let mut sector = [0u8; 512];
-        self.reader.read_sector(lba, &mut sector)?;
-
-        let value = u32::from_le_bytes([
-            sector[offset_in_sector],
-            sector[offset_in_sector + 1],
-            sector[offset_in_sector + 2],
-            sector[offset_in_sector + 3],
-        ]);
-
-        Ok(value)
     }
 
     pub fn read_file(

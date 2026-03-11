@@ -190,7 +190,7 @@ lazy_static! {
 
 pub fn init() {
     serial_println!("[shell] init");
-    cprintln!(57, 197, 187, "MikuOS v0.1.1");
+    cprintln!(57, 197, 187, "MikuOS v0.1.2");
     prompt();
 }
 
@@ -451,6 +451,7 @@ pub fn shell_thread() -> ! {
             crate::scheduler::sleep(CMD_POLL_TICKS);
             continue;
         }
+        crate::commands::ext_cmds_common::periodic_flush_check();
         if PENDING.lock().ready {
             process_pending();
         } else {

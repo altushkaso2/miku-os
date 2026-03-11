@@ -231,7 +231,7 @@ fn main() {
         "-boot".into(), "d".into(),
         "-cdrom".into(), iso_path.to_str().unwrap().into(),
         "-drive".into(),
-        format!("file={},format=raw,if=none,id=disk0,cache=writeback",
+        format!("file={},format=raw,if=none,id=disk0,cache=unsafe,aio=threads",
             disk_path.display()),
         "-device".into(),
         "ide-hd,drive=disk0,bus=ide.0,unit=1,rotation_rate=1".into(),
@@ -243,7 +243,7 @@ fn main() {
 
     if cfg.data_mb > 0 && data_path.exists() {
         args.push("-drive".into());
-        args.push(format!("file={},format=raw,if=none,id=disk1,cache=writeback",
+        args.push(format!("file={},format=raw,if=none,id=disk1,cache=unsafe,aio=threads",
             data_path.display()));
         args.push("-device".into());
         args.push("ide-hd,drive=disk1,bus=ide.1,unit=1,rotation_rate=1".into());
