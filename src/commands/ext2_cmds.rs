@@ -38,6 +38,7 @@ const EMPTY_FS: MikuFS = MikuFS {
     groups_dirty:     [false; 32],
     last_sync_ticks: 0,
     journal_inode_cached: None,
+    alloc_hint: [0u32; 32],
 };
 
 static mut FS_SLOTS:     [MikuFS; MAX_MOUNTS] = [EMPTY_FS; MAX_MOUNTS];
