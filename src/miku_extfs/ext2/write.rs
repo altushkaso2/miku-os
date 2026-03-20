@@ -14,16 +14,10 @@ pub struct TreeEntry {
 impl TreeEntry {
     pub const fn empty() -> Self {
         Self {
-            name: [0; 60],
-            name_len: 0,
-            depth: 0,
-            is_last: false,
-            is_dir: false,
-            is_symlink: false,
-            size: 0,
+            name: [0; 60], name_len: 0, depth: 0,
+            is_last: false, is_dir: false, is_symlink: false, size: 0,
         }
     }
-
     pub fn name_str(&self) -> &str {
         core::str::from_utf8(&self.name[..self.name_len as usize]).unwrap_or("?")
     }
@@ -37,11 +31,7 @@ pub struct TreeResult {
 
 impl TreeResult {
     pub const fn new() -> Self {
-        Self {
-            entries: [const { TreeEntry::empty() }; 128],
-            count: 0,
-            max: 128,
-        }
+        Self { entries: [const { TreeEntry::empty() }; 128], count: 0, max: 128 }
     }
 }
 
@@ -67,22 +57,11 @@ pub struct FsckResult {
 impl FsckResult {
     pub const fn new() -> Self {
         Self {
-            checked: false,
-            errors: 0,
-            total_inodes: 0,
-            total_blocks: 0,
-            free_inodes: 0,
-            free_blocks: 0,
-            used_inodes: 0,
-            block_size: 0,
-            inode_size: 0,
-            bad_magic: false,
-            root_ok: false,
-            root_not_dir: false,
-            bad_groups: 0,
-            orphan_inodes: 0,
-            group_free_blocks: [0; 32],
-            group_free_inodes: [0; 32],
+            checked: false, errors: 0, total_inodes: 0, total_blocks: 0,
+            free_inodes: 0, free_blocks: 0, used_inodes: 0, block_size: 0,
+            inode_size: 0, bad_magic: false, root_ok: false, root_not_dir: false,
+            bad_groups: 0, orphan_inodes: 0,
+            group_free_blocks: [0; 32], group_free_inodes: [0; 32],
         }
     }
 }
@@ -115,7 +94,8 @@ impl MikuFS {
             } else {
                 let mut block_buf = [0u8; 4096];
                 self.read_block_into(phys_block, &mut block_buf[..bs])?;
-                block_buf[block_off..block_off + chunk].copy_from_slice(&data[done..done + chunk]);
+                block_buf[block_off..block_off + chunk]
+                    .copy_from_slice(&data[done..done + chunk]);
                 self.write_block_data(phys_block, &block_buf[..bs])?;
             }
 
@@ -130,8 +110,6 @@ impl MikuFS {
         let now = self.get_timestamp();
         inode.set_mtime(now);
         self.write_inode(inode_num, &inode)?;
-        self.sync()?;
-
         Ok(done)
     }
 
@@ -145,7 +123,6 @@ impl MikuFS {
         if !parent.is_directory() {
             return Err(FsError::NotDirectory);
         }
-
         if self.ext2_lookup_in_dir(parent_ino, name)?.is_some() {
             return Err(FsError::AlreadyExists);
         }
@@ -159,7 +136,6 @@ impl MikuFS {
 
         self.write_inode(new_ino, &inode)?;
         self.add_dir_entry(parent_ino, name, new_ino, FT_REG_FILE)?;
-        self.sync()?;
 
         Ok(new_ino)
     }
@@ -174,7 +150,6 @@ impl MikuFS {
         if !parent.is_directory() {
             return Err(FsError::NotDirectory);
         }
-
         if self.ext2_lookup_in_dir(parent_ino, name)?.is_some() {
             return Err(FsError::AlreadyExists);
         }
@@ -226,7 +201,6 @@ impl MikuFS {
             self.groups[gidx].inc_used_dirs();
             self.flush_group_desc(gidx)?;
         }
-        self.sync()?;
 
         Ok(new_ino)
     }
@@ -241,7 +215,6 @@ impl MikuFS {
         if !parent.is_directory() {
             return Err(FsError::NotDirectory);
         }
-
         if self.ext2_lookup_in_dir(parent_ino, name)?.is_some() {
             return Err(FsError::AlreadyExists);
         }
@@ -262,13 +235,11 @@ impl MikuFS {
         } else {
             let data_block = self.alloc_block(group)?;
             self.zero_block(data_block)?;
-
             let mut block_buf = [0u8; 4096];
             let bs = self.block_size as usize;
             let copy_len = target_len.min(bs);
             block_buf[..copy_len].copy_from_slice(&target_bytes[..copy_len]);
             self.write_block_data(data_block, &block_buf[..bs])?;
-
             inode.set_block(0, data_block);
             inode.set_size(target_len as u32);
             inode.set_blocks(self.block_size / 512);
@@ -276,7 +247,6 @@ impl MikuFS {
 
         self.write_inode(new_ino, &inode)?;
         self.add_dir_entry(parent_ino, name, new_ino, FT_SYMLINK)?;
-        self.sync()?;
 
         Ok(new_ino)
     }
@@ -288,7 +258,6 @@ impl MikuFS {
         };
 
         let inode = self.read_inode(target_ino)?;
-
         if inode.is_directory() {
             return Err(FsError::IsDirectory);
         }
@@ -299,7 +268,6 @@ impl MikuFS {
 
         self.free_inode(target_ino)?;
         self.remove_dir_entry(parent_ino, name)?;
-        self.sync()?;
 
         Ok(())
     }
@@ -314,7 +282,6 @@ impl MikuFS {
         if !inode.is_directory() {
             return Err(FsError::NotDirectory);
         }
-
         if !self.is_ext2_dir_empty(target_ino)? {
             return Err(FsError::NotEmpty);
         }
@@ -337,7 +304,6 @@ impl MikuFS {
             self.groups[gidx].dec_used_dirs();
             self.flush_group_desc(gidx)?;
         }
-        self.sync()?;
 
         Ok(())
     }
@@ -367,12 +333,9 @@ impl MikuFS {
             let dir_inode = self.read_inode(target_ino)?;
             let mut entries = [const { DirEntry::empty() }; 64];
             let count = self.read_dir(&dir_inode, &mut entries)?;
-
             for i in 0..count {
                 let n = entries[i].name_str();
-                if n == "." || n == ".." {
-                    continue;
-                }
+                if n == "." || n == ".." { continue; }
                 if child_count < 32 {
                     let nb = n.as_bytes();
                     let l = nb.len().min(255);
@@ -384,7 +347,6 @@ impl MikuFS {
         }
 
         let mut total = 0u32;
-
         for i in 0..child_count {
             let l = children_lens[i] as usize;
             let name_bytes = &children_names[i][..l];
@@ -423,7 +385,6 @@ impl MikuFS {
         if inode.is_symlink() && inode.is_fast_symlink() {
             return Ok(());
         }
-
         if inode.blocks() == 0 {
             return Ok(());
         }
@@ -442,12 +403,10 @@ impl MikuFS {
         if ind != 0 && ind >= first_data && ind < total_blocks {
             self.free_indirect_chain(ind, 1)?;
         }
-
         let dind = inode.block(13);
         if dind != 0 && dind >= first_data && dind < total_blocks {
             self.free_indirect_chain(dind, 2)?;
         }
-
         let tind = inode.block(14);
         if tind != 0 && tind >= first_data && tind < total_blocks {
             self.free_indirect_chain(tind, 3)?;
@@ -457,9 +416,7 @@ impl MikuFS {
     }
 
     fn free_indirect_chain(&mut self, block: u32, depth: u32) -> Result<(), FsError> {
-        if block == 0 {
-            return Ok(());
-        }
+        if block == 0 { return Ok(()); }
 
         let ptrs_per_block = self.block_size / 4;
         let total_blocks = self.superblock.blocks_count();
@@ -487,34 +444,23 @@ impl MikuFS {
 
     pub fn ext2_truncate(&mut self, inode_num: u32) -> Result<(), FsError> {
         let mut inode = self.read_inode(inode_num)?;
-
         self.free_all_blocks(&inode)?;
-
-        for i in 0..15 {
-            inode.set_block(i, 0);
-        }
-
+        for i in 0..15 { inode.set_block(i, 0); }
         inode.set_size(0);
         inode.set_blocks(0);
         let now = self.get_timestamp();
         inode.set_mtime(now);
         self.write_inode(inode_num, &inode)?;
-        self.sync()?;
-
         Ok(())
     }
 
     pub fn ext2_rename(
-        &mut self,
-        parent_ino: u32,
-        old_name: &str,
-        new_name: &str,
+        &mut self, parent_ino: u32, old_name: &str, new_name: &str,
     ) -> Result<(), FsError> {
         let target_ino = match self.ext2_lookup_in_dir(parent_ino, old_name)? {
             Some(ino) => ino,
             None => return Err(FsError::NotFound),
         };
-
         if self.ext2_lookup_in_dir(parent_ino, new_name)?.is_some() {
             return Err(FsError::AlreadyExists);
         }
@@ -528,8 +474,6 @@ impl MikuFS {
 
         self.remove_dir_entry(parent_ino, old_name)?;
         self.add_dir_entry(parent_ino, new_name, target_ino, ft)?;
-        self.sync()?;
-
         Ok(())
     }
 
@@ -552,10 +496,7 @@ impl MikuFS {
     }
 
     pub fn ext2_copy_file(
-        &mut self,
-        src_ino: u32,
-        dst_parent_ino: u32,
-        dst_name: &str,
+        &mut self, src_ino: u32, dst_parent_ino: u32, dst_name: &str,
     ) -> Result<u32, FsError> {
         let src_inode = self.read_inode(src_ino)?;
         if !src_inode.is_regular() {
@@ -564,20 +505,18 @@ impl MikuFS {
 
         let size = src_inode.size();
         let mode = src_inode.permissions();
-
         let new_ino = self.ext2_create_file(dst_parent_ino, dst_name, mode)?;
 
         if size > 0 {
+            let bs = self.block_size as usize;
             let mut offset = 0u64;
-            let mut buf = [0u8; 512];
+            let mut buf = [0u8; 4096];
 
             while offset < size {
-                let to_read = ((size - offset) as usize).min(512);
+                let to_read = ((size - offset) as usize).min(bs);
                 let src_inode = self.read_inode(src_ino)?;
                 let n = self.read_file(&src_inode, offset, &mut buf[..to_read])?;
-                if n == 0 {
-                    break;
-                }
+                if n == 0 { break; }
                 self.ext2_write_file(new_ino, &buf[..n], offset)?;
                 offset += n as u64;
             }
@@ -599,52 +538,36 @@ impl MikuFS {
 
     pub fn ext2_dir_size(&mut self, dir_ino: u32) -> Result<(u32, u64), FsError> {
         let inode = self.read_inode(dir_ino)?;
-        if !inode.is_directory() {
-            return Err(FsError::NotDirectory);
-        }
+        if !inode.is_directory() { return Err(FsError::NotDirectory); }
 
         let mut entries = [const { DirEntry::empty() }; 64];
         let count = self.read_dir(&inode, &mut entries)?;
-
         let mut total_files = 0u32;
         let mut total_bytes = 0u64;
 
         for i in 0..count {
             let e = &entries[i];
             let name = e.name_str();
-            if name == "." || name == ".." {
-                continue;
-            }
-
+            if name == "." || name == ".." { continue; }
             let child_inode = self.read_inode(e.inode)?;
-
             if child_inode.is_directory() {
-                let (sub_files, sub_bytes) = self.ext2_dir_size(e.inode)?;
-                total_files += sub_files + 1;
-                total_bytes += sub_bytes;
+                let (sf, sb) = self.ext2_dir_size(e.inode)?;
+                total_files += sf + 1;
+                total_bytes += sb;
             } else {
                 total_files += 1;
                 total_bytes += child_inode.size();
             }
         }
-
         Ok((total_files, total_bytes))
     }
 
     pub fn ext2_tree(
-        &mut self,
-        dir_ino: u32,
-        prefix: &str,
-        result: &mut TreeResult,
+        &mut self, dir_ino: u32, prefix: &str, result: &mut TreeResult,
     ) -> Result<(), FsError> {
-        if result.count >= result.max {
-            return Ok(());
-        }
-
+        if result.count >= result.max { return Ok(()); }
         let inode = self.read_inode(dir_ino)?;
-        if !inode.is_directory() {
-            return Err(FsError::NotDirectory);
-        }
+        if !inode.is_directory() { return Err(FsError::NotDirectory); }
 
         let mut entries = [const { DirEntry::empty() }; 64];
         let count = self.read_dir(&inode, &mut entries)?;
@@ -652,25 +575,17 @@ impl MikuFS {
         let mut real_count = 0usize;
         for i in 0..count {
             let n = entries[i].name_str();
-            if n != "." && n != ".." {
-                real_count += 1;
-            }
+            if n != "." && n != ".." { real_count += 1; }
         }
 
         let mut idx = 0usize;
         for i in 0..count {
             let e = &entries[i];
             let name = e.name_str();
-            if name == "." || name == ".." {
-                continue;
-            }
-
+            if name == "." || name == ".." { continue; }
             idx += 1;
             let is_last = idx == real_count;
-
-            if result.count >= result.max {
-                break;
-            }
+            if result.count >= result.max { break; }
 
             let entry = &mut result.entries[result.count];
             entry.depth = prefix.len() as u8 / 4;
@@ -681,12 +596,10 @@ impl MikuFS {
             let l = nb.len().min(59);
             entry.name[..l].copy_from_slice(&nb[..l]);
             entry.name_len = l as u8;
-
             if !entry.is_dir {
                 let child_inode = self.read_inode(e.inode)?;
                 entry.size = child_inode.size();
             }
-
             result.count += 1;
 
             if e.file_type == FT_DIR && entry.depth < 4 {
@@ -700,13 +613,11 @@ impl MikuFS {
                 let _ = self.ext2_tree(e.inode, np, result);
             }
         }
-
         Ok(())
     }
 
     pub fn ext2_fsck(&mut self) -> FsckResult {
         let mut result = FsckResult::new();
-
         result.total_inodes = self.superblock.inodes_count();
         result.total_blocks = self.superblock.blocks_count();
         result.free_inodes = self.superblock.free_inodes_count();
@@ -721,18 +632,14 @@ impl MikuFS {
         }
 
         for g in 0..self.group_count as usize {
-            if g >= 32 {
-                break;
-            }
+            if g >= 32 { break; }
             let bb = self.groups[g].block_bitmap();
             let ib = self.groups[g].inode_bitmap();
             let it = self.groups[g].inode_table();
-
             if bb == 0 || ib == 0 || it == 0 {
                 result.errors += 1;
                 result.bad_groups += 1;
             }
-
             result.group_free_blocks[g] = self.groups[g].free_blocks();
             result.group_free_inodes[g] = self.groups[g].free_inodes();
         }
@@ -751,9 +658,7 @@ impl MikuFS {
         let mut used_inodes = 0u32;
         let first_ino = if self.superblock.rev_level() >= 1 {
             self.superblock.first_ino()
-        } else {
-            EXT2_FIRST_INO_OLD
-        };
+        } else { EXT2_FIRST_INO_OLD };
 
         for ino in 1..=self.superblock.inodes_count().min(256) {
             if let Ok(inode) = self.read_inode(ino) {
@@ -765,18 +670,17 @@ impl MikuFS {
                 }
             }
         }
-
         result.used_inodes = used_inodes;
         result.checked = true;
-
         result
     }
 
-    pub fn ext2_lookup_in_dir(&mut self, dir_ino: u32, name: &str) -> Result<Option<u32>, FsError> {
+    pub fn ext2_lookup_in_dir(
+        &mut self, dir_ino: u32, name: &str,
+    ) -> Result<Option<u32>, FsError> {
         let inode = self.read_inode(dir_ino)?;
         let mut entries = [const { DirEntry::empty() }; 64];
         let count = self.read_dir(&inode, &mut entries)?;
-
         let name_bytes = name.as_bytes();
         for i in 0..count {
             let e = &entries[i];
@@ -792,22 +696,15 @@ impl MikuFS {
         let inode = self.read_inode(dir_ino)?;
         let mut entries = [const { DirEntry::empty() }; 64];
         let count = self.read_dir(&inode, &mut entries)?;
-
         for i in 0..count {
             let name = entries[i].name_str();
-            if name != "." && name != ".." {
-                return Ok(false);
-            }
+            if name != "." && name != ".." { return Ok(false); }
         }
         Ok(true)
     }
 
     pub fn add_dir_entry(
-        &mut self,
-        dir_ino: u32,
-        name: &str,
-        child_ino: u32,
-        file_type: u8,
+        &mut self, dir_ino: u32, name: &str, child_ino: u32, file_type: u8,
     ) -> Result<(), FsError> {
         let inode = self.read_inode(dir_ino)?;
         let bs = self.block_size as usize;
@@ -815,77 +712,52 @@ impl MikuFS {
         let name_len = name_bytes.len();
         let needed = ((8 + name_len + 3) / 4) * 4;
 
-        let num_blocks = if inode.size_lo() == 0 {
-            0
-        } else {
-            (inode.size_lo() as usize + bs - 1) / bs
-        };
+        let num_blocks = if inode.size_lo() == 0 { 0 }
+        else { (inode.size_lo() as usize + bs - 1) / bs };
 
         for b in 0..num_blocks {
             let phys = self.get_file_block(&inode, b as u32)?;
-            if phys == 0 {
-                continue;
-            }
+            if phys == 0 { continue; }
 
             let mut block_data = [0u8; 4096];
             self.read_block_into(phys, &mut block_data[..bs])?;
 
             let mut pos = 0;
             while pos < bs {
-                if pos + 8 > bs {
-                    break;
-                }
-
+                if pos + 8 > bs { break; }
                 let rec_ino = u32::from_le_bytes([
-                    block_data[pos],
-                    block_data[pos + 1],
-                    block_data[pos + 2],
-                    block_data[pos + 3],
+                    block_data[pos], block_data[pos+1],
+                    block_data[pos+2], block_data[pos+3],
                 ]);
-                let rec_len =
-                    u16::from_le_bytes([block_data[pos + 4], block_data[pos + 5]]) as usize;
-                let rec_name_len = block_data[pos + 6] as usize;
+                let rec_len = u16::from_le_bytes([
+                    block_data[pos+4], block_data[pos+5],
+                ]) as usize;
+                let rec_name_len = block_data[pos+6] as usize;
+                if rec_len == 0 || rec_len > bs { break; }
 
-                if rec_len == 0 || rec_len > bs {
-                    break;
-                }
+                let actual_size = if rec_ino == 0 { 8 }
+                else { ((8 + rec_name_len + 3) / 4) * 4 };
 
-                let actual_size = if rec_ino == 0 {
-                    8
-                } else {
-                    ((8 + rec_name_len + 3) / 4) * 4
-                };
-
-                if rec_len < actual_size {
-                    pos += rec_len;
-                    continue;
-                }
-
+                if rec_len < actual_size { pos += rec_len; continue; }
                 let free_space = rec_len - actual_size;
 
                 if free_space >= needed {
                     if rec_ino != 0 {
                         let new_rec_len = actual_size as u16;
-                        block_data[pos + 4..pos + 6].copy_from_slice(&new_rec_len.to_le_bytes());
+                        block_data[pos+4..pos+6].copy_from_slice(&new_rec_len.to_le_bytes());
                         pos += actual_size;
                     }
+                    let remaining = if rec_ino != 0 { rec_len - actual_size } else { rec_len };
 
-                    let remaining = if rec_ino != 0 {
-                        rec_len - actual_size
-                    } else {
-                        rec_len
-                    };
-
-                    block_data[pos..pos + 4].copy_from_slice(&child_ino.to_le_bytes());
-                    block_data[pos + 4..pos + 6].copy_from_slice(&(remaining as u16).to_le_bytes());
-                    block_data[pos + 6] = name_len as u8;
-                    block_data[pos + 7] = file_type;
-                    block_data[pos + 8..pos + 8 + name_len].copy_from_slice(name_bytes);
+                    block_data[pos..pos+4].copy_from_slice(&child_ino.to_le_bytes());
+                    block_data[pos+4..pos+6].copy_from_slice(&(remaining as u16).to_le_bytes());
+                    block_data[pos+6] = name_len as u8;
+                    block_data[pos+7] = file_type;
+                    block_data[pos+8..pos+8+name_len].copy_from_slice(name_bytes);
 
                     self.write_block_data(phys, &block_data[..bs])?;
                     return Ok(());
                 }
-
                 pos += rec_len;
             }
         }
@@ -899,8 +771,7 @@ impl MikuFS {
         block_data[4..6].copy_from_slice(&(bs as u16).to_le_bytes());
         block_data[6] = name_len as u8;
         block_data[7] = file_type;
-        block_data[8..8 + name_len].copy_from_slice(name_bytes);
-
+        block_data[8..8+name_len].copy_from_slice(name_bytes);
         self.write_block_data(new_block, &block_data[..bs])?;
 
         let logical_block = num_blocks as u32;
@@ -924,7 +795,6 @@ impl MikuFS {
         let now = self.get_timestamp();
         dir_inode.set_mtime(now);
         self.write_inode(dir_ino, &dir_inode)?;
-
         Ok(())
     }
 
@@ -932,67 +802,51 @@ impl MikuFS {
         let inode = self.read_inode(dir_ino)?;
         let bs = self.block_size as usize;
         let name_bytes = name.as_bytes();
-
-        let num_blocks = if inode.size_lo() == 0 {
-            0
-        } else {
-            (inode.size_lo() as usize + bs - 1) / bs
-        };
+        let num_blocks = if inode.size_lo() == 0 { 0 }
+        else { (inode.size_lo() as usize + bs - 1) / bs };
 
         for b in 0..num_blocks {
             let phys = self.get_file_block(&inode, b as u32)?;
-            if phys == 0 {
-                continue;
-            }
+            if phys == 0 { continue; }
 
             let mut block_data = [0u8; 4096];
             self.read_block_into(phys, &mut block_data[..bs])?;
 
             let mut pos = 0;
             let mut prev_pos: Option<usize> = None;
-
             while pos < bs {
-                if pos + 8 > bs {
-                    break;
-                }
-
+                if pos + 8 > bs { break; }
                 let rec_ino = u32::from_le_bytes([
-                    block_data[pos],
-                    block_data[pos + 1],
-                    block_data[pos + 2],
-                    block_data[pos + 3],
+                    block_data[pos], block_data[pos+1],
+                    block_data[pos+2], block_data[pos+3],
                 ]);
-                let rec_len =
-                    u16::from_le_bytes([block_data[pos + 4], block_data[pos + 5]]) as usize;
-                let rec_name_len = block_data[pos + 6] as usize;
-
-                if rec_len == 0 {
-                    break;
-                }
+                let rec_len = u16::from_le_bytes([
+                    block_data[pos+4], block_data[pos+5],
+                ]) as usize;
+                let rec_name_len = block_data[pos+6] as usize;
+                if rec_len == 0 { break; }
 
                 if rec_ino != 0
                     && rec_name_len == name_bytes.len()
                     && pos + 8 + rec_name_len <= bs
-                    && &block_data[pos + 8..pos + 8 + rec_name_len] == name_bytes
+                    && &block_data[pos+8..pos+8+rec_name_len] == name_bytes
                 {
                     if let Some(pp) = prev_pos {
-                        let prev_rec_len =
-                            u16::from_le_bytes([block_data[pp + 4], block_data[pp + 5]]) as usize;
+                        let prev_rec_len = u16::from_le_bytes([
+                            block_data[pp+4], block_data[pp+5],
+                        ]) as usize;
                         let merged = prev_rec_len + rec_len;
-                        block_data[pp + 4..pp + 6].copy_from_slice(&(merged as u16).to_le_bytes());
+                        block_data[pp+4..pp+6].copy_from_slice(&(merged as u16).to_le_bytes());
                     } else {
-                        block_data[pos..pos + 4].copy_from_slice(&0u32.to_le_bytes());
+                        block_data[pos..pos+4].copy_from_slice(&0u32.to_le_bytes());
                     }
-
                     self.write_block_data(phys, &block_data[..bs])?;
                     return Ok(());
                 }
-
                 prev_pos = Some(pos);
                 pos += rec_len;
             }
         }
-
         Err(FsError::NotFound)
     }
 }

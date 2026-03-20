@@ -100,13 +100,23 @@ lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
+        idt.invalid_opcode.set_handler_fn(ud_handler);
+        idt.device_not_available.set_handler_fn(nm_handler);
         unsafe {
             idt.double_fault
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(crate::gdt::DOUBLE_FAULT_IST_INDEX);
         }
-        idt.page_fault.set_handler_fn(page_fault_handler);
-        idt.general_protection_fault.set_handler_fn(gpf_handler);
+        unsafe {
+            idt.page_fault
+                .set_handler_fn(page_fault_handler)
+                .set_stack_index(crate::gdt::PAGE_FAULT_IST_INDEX);
+        }
+        unsafe {
+            idt.general_protection_fault
+                .set_handler_fn(gpf_handler)
+                .set_stack_index(crate::gdt::PAGE_FAULT_IST_INDEX);
+        }
         unsafe {
             let timer_fn: extern "x86-interrupt" fn(InterruptStackFrame) =
                 core::mem::transmute(_timer_isr_naked as *const ());
@@ -171,11 +181,44 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     crate::serial_println!("[int] breakpoint\n{:#?}", stack_frame);
 }
 
+extern "x86-interrupt" fn ud_handler(stack_frame: InterruptStackFrame) {
+    crate::serial_println!("[#UD] invalid opcode\n{:#?}", stack_frame);
+    let pid = crate::scheduler::current_pid();
+    if pid != 0 { crate::scheduler::kill(pid); crate::scheduler::yield_now(); }
+    loop { x86_64::instructions::hlt(); }
+}
+
+extern "x86-interrupt" fn nm_handler(stack_frame: InterruptStackFrame) {
+    crate::serial_println!("[#NM] device not available (SSE/FPU)\n{:#?}", stack_frame);
+    unsafe {
+        let cr0: u64;
+        core::arch::asm!("mov {}, cr0", out(reg) cr0);
+        let cr4: u64;
+        core::arch::asm!("mov {}, cr4", out(reg) cr4);
+        crate::serial_println!("[#NM] cr0={:#x} cr4={:#x}", cr0, cr4);
+    }
+    let pid = crate::scheduler::current_pid();
+    if pid != 0 { crate::scheduler::kill(pid); crate::scheduler::yield_now(); }
+    loop { x86_64::instructions::hlt(); }
+}
+
 extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) -> ! {
-    crate::serial_println!("[double fault] code={}\n{:#?}", error_code, stack_frame);
+    let cr2 = x86_64::registers::control::Cr2::read().as_u64();
+    let (cr3f, _) = x86_64::registers::control::Cr3::read();
+    let cr3 = cr3f.start_address().as_u64();
+    unsafe {
+        let tss = &*crate::gdt::tss_ptr();
+        let ist0 = tss.interrupt_stack_table[0].as_u64();
+        let ist1 = tss.interrupt_stack_table[1].as_u64();
+        let rsp0 = tss.privilege_stack_table[0].as_u64();
+        crate::serial_println!(
+            "[double fault] code={} cr2={:#x} cr3={:#x}\n  rsp0={:#x}\n  ist0={:#x} ist1={:#x}\n{:#?}",
+            error_code, cr2, cr3, rsp0, ist0, ist1, stack_frame
+        );
+    }
     loop { x86_64::instructions::hlt(); }
 }
 
@@ -190,23 +233,53 @@ extern "x86-interrupt" fn page_fault_handler(
     let (cr3_frame, _) = Cr3::read();
     let cr3 = cr3_frame.start_address().as_u64();
 
-    if let Some(pte_raw) = crate::vmm::read_pte_raw(cr3, page_addr) {
-        if crate::swap_map::is_swap_pte(pte_raw) {
-            let slot = crate::swap_map::slot_from_pte(pte_raw);
-            if crate::swap_map::try_swapin(cr3, page_addr, slot) {
-                return;
+    if page_addr != 0 {
+        if let Some(pte_raw) = crate::vmm::read_pte_raw(cr3, page_addr) {
+            if crate::swap_map::is_swap_pte(pte_raw) {
+                let slot = crate::swap_map::slot_from_pte(pte_raw);
+                if crate::swap_map::try_swapin(cr3, page_addr, slot) {
+                    return;
+                }
             }
         }
     }
 
-    crate::serial_println!(
-        "[page fault] fatal addr={:#x} code={:?}\n{:#?}",
-        fault_addr, error_code, stack_frame
+    let from_user = error_code.contains(
+        x86_64::structures::idt::PageFaultErrorCode::USER_MODE
     );
+
+    crate::serial_println!(
+        "[page fault] addr={:#x} code={:?} user={}",
+        fault_addr, error_code, from_user
+    );
+
+    if from_user {
+        let pid = crate::scheduler::current_pid();
+        crate::serial_println!("[page fault] killing pid={}", pid);
+        crate::scheduler::kill(pid);
+        crate::scheduler::yield_now();
+        return;
+    }
+
+    crate::serial_println!("{:#?}", stack_frame);
     loop { x86_64::instructions::hlt(); }
 }
 
 extern "x86-interrupt" fn gpf_handler(stack_frame: InterruptStackFrame, error_code: u64) {
-    crate::serial_println!("[gpf] code={}\n{:#?}", error_code, stack_frame);
+    let from_user = stack_frame.code_segment != 0x08;
+
+    crate::serial_println!(
+        "[gpf] code={} user={}\n{:#?}",
+        error_code, from_user, stack_frame
+    );
+
+    if from_user {
+        let pid = crate::scheduler::current_pid();
+        crate::serial_println!("[gpf] killing pid={}", pid);
+        crate::scheduler::kill(pid);
+        crate::scheduler::yield_now();
+        return;
+    }
+
     loop { x86_64::instructions::hlt(); }
 }

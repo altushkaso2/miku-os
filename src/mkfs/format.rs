@@ -72,8 +72,8 @@ impl Writer {
     }
 
     fn zero_lba_range(&mut self, start_lba: u32, count: u32) -> Result<(), MkfsError> {
-        const CHUNK: u32 = 127;
-        static ZEROS: [u8; 127 * 512] = [0u8; 127 * 512];
+        const CHUNK: u32 = 255;
+        static ZEROS: [u8; 255 * 512] = [0u8; 255 * 512];
         let mut done = 0u32;
         while done < count {
             let n = (count - done).min(CHUNK) as u8;
@@ -209,16 +209,23 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
     let now  = (crate::vfs::procfs::uptime_ticks() / 18) as u32;
     let uuid = make_uuid(now ^ (params.drive_index as u32).wrapping_mul(0xDEADBEEF));
 
-    crate::serial_println!("[mkfs] step 3: zeroing metadata");
-    let spb = lay.sectors_per_block;
-    for g in 0..lay.group_count as usize {
+    crate::serial_println!("[mkfs] step 3: zeroing group 0 metadata (lazy init)");
+    {
+        let gl = &lay.groups[0];
+        w.zero_block(gl.block_bitmap, lay.block_size, tb)?;
+        w.zero_block(gl.inode_bitmap, lay.block_size, tb)?;
+        let itab_blocks = (lay.inodes_per_group as u64
+            * lay.inode_size as u64
+            + lay.block_size as u64 - 1) / lay.block_size as u64;
+        let zero_itab = itab_blocks.min(4) as u32;
+        for b in 0..zero_itab {
+            w.zero_block(gl.inode_table + b, lay.block_size, tb)?;
+        }
+    }
+    for g in 1..lay.group_count as usize {
         let gl = &lay.groups[g];
-        let first_blk = gl.start_block;
-        let last_blk  = gl.data_start.min(tb);
-        if last_blk <= first_blk { continue; }
-        let start_lba = first_blk * spb;
-        let count     = (last_blk - first_blk) * spb;
-        w.zero_lba_range(start_lba, count)?;
+        w.zero_block(gl.block_bitmap, lay.block_size, tb)?;
+        w.zero_block(gl.inode_bitmap, lay.block_size, tb)?;
     }
 
     crate::serial_println!("[mkfs] step 4: block bitmaps");
@@ -293,9 +300,7 @@ pub fn mkfs(drive: AtaDrive, params: &MkfsParams) -> Result<MkfsReport, MkfsErro
         crate::serial_println!("[mkfs] step 6b: journal inode, {} blocks", lay.journal_blocks);
         let jblks = lay.journal_blocks;
 
-        for b in 0..jblks {
-            w.zero_block(j_first + b, lay.block_size, tb)?;
-        }
+        w.zero_block(j_first, lay.block_size, tb)?;
 
         let mut jsb = [0u8; 4096];
         wu32be(&mut jsb, 0,  JBD_MAGIC);

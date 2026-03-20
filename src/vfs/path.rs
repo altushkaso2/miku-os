@@ -112,20 +112,8 @@ impl PathWalker {
         Err(VfsError::NotFound)
     }
 
-    pub fn effective_node(nodes: &[crate::vfs::vnode::VNode; MAX_VNODES], id: usize) -> usize {
-        if nodes[id].mount_id != INVALID_U8 {
-            let mid = nodes[id].mount_id;
-            for i in 0..MAX_VNODES {
-                if i != id
-                    && nodes[i].active
-                    && nodes[i].is_dir()
-                    && nodes[i].mount_id == mid
-                    && nodes[i].ext2_ino != 0
-                {
-                    return i;
-                }
-            }
-        }
+    #[inline]
+    pub fn effective_node(_nodes: &[crate::vfs::vnode::VNode; MAX_VNODES], id: usize) -> usize {
         id
     }
 

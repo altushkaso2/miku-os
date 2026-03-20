@@ -50,6 +50,7 @@ pub struct Process {
 
     pub stack:           Box<[u8]>,
     pub user_stack_phys: Option<u64>,
+    pub brk:             AtomicU64,
 }
 
 impl Process {
@@ -80,6 +81,7 @@ impl Process {
             on_rq:            AtomicBool::new(false),
             stack,
             user_stack_phys:  None,
+            brk:              AtomicU64::new(0),
         })
     }
 
@@ -109,6 +111,7 @@ impl Process {
             on_rq:            AtomicBool::new(false),
             stack,
             user_stack_phys:  None,
+            brk:              AtomicU64::new(0),
         })
     }
 
@@ -156,8 +159,7 @@ impl Process {
     }
 
     pub fn new_user(entry: u64, aspace: AddressSpace) -> Box<Self> {
-        let cr3 = aspace.cr3;
-        core::mem::forget(aspace);
+        let cr3 = aspace.into_raw();
         let mut p = Self::alloc_raw("user", 10, cr3);
         let top = p.stack_top();
         p.rsp.store(build_kernel_frame(top, entry), Ordering::Relaxed);
@@ -176,14 +178,28 @@ impl Process {
         }
 
         let user_rsp = (USER_STACK_VIRT_TOP - 8) & !0xF;
-        let cr3      = aspace.cr3;
-        core::mem::forget(aspace);
+        let cr3      = aspace.into_raw();
 
         let mut p = Self::alloc_raw("user-r3", 10, cr3);
         let top = p.stack_top();
         p.rsp.store(build_user_frame(top, entry, user_rsp), Ordering::Relaxed);
         p.user_stack_phys = Some(stack_phys);
         Some(p)
+    }
+
+    pub fn new_elf(entry: u64, user_rsp: u64, aspace: AddressSpace) -> Option<Box<Self>> {
+        let cr3 = aspace.into_raw();
+        let mut p = Self::alloc_raw("user-elf", 10, cr3);
+        let top = p.stack_top();
+        p.rsp.store(build_user_frame(top, entry, user_rsp), Ordering::Relaxed);
+        Some(p)
+    }
+
+    pub fn cleanup_user_address_space(&mut self) {
+        if self.cr3 == 0 || self.cr3 == crate::vmm::kernel_cr3() { return; }
+        let mut aspace = AddressSpace::from_raw(self.cr3);
+        aspace.free_address_space();
+        self.cr3 = 0;
     }
 }
 
@@ -193,8 +209,7 @@ fn build_kernel_frame(kernel_stack_top: u64, rip: u64) -> u64 {
 
 fn build_user_frame(kernel_stack_top: u64, rip: u64, user_rsp: u64) -> u64 {
     write_frame(
-        kernel_stack_top,
-        rip,
+        kernel_stack_top, rip,
         crate::gdt::user_code_selector().0 as u64,
         user_rsp,
         crate::gdt::user_data_selector().0 as u64,
@@ -205,9 +220,7 @@ fn write_frame(kernel_stack_top: u64, rip: u64, cs: u64, iret_rsp: u64, ss: u64)
     let rsp = kernel_stack_top - FRAME_SIZE;
     unsafe {
         let f = rsp as *mut u64;
-        for i in 0..15 {
-            f.add(i).write(0);
-        }
+        for i in 0..15 { f.add(i).write(0); }
         f.add(15).write(rip);
         f.add(16).write(cs);
         f.add(17).write(0x202);

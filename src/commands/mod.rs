@@ -21,6 +21,18 @@ macro_rules! ext_dispatch {
     };
 }
 
+fn cmd_exec(path: &str, args: &[&str]) {
+    match crate::exec_elf::exec(path, args) {
+        Ok(pid) => {
+            crate::scheduler::waitpid(pid);
+            crate::user_stdin::clear_foreground();
+        }
+        Err(e) => {
+            crate::print_error!("  exec: {}", e.as_str());
+        }
+    }
+}
+
 pub fn execute(input: &str) {
     let t = input.trim();
     if t.is_empty() { return; }
@@ -393,6 +405,18 @@ pub fn execute(input: &str) {
         "swapon.auto"=> disk_cmds::cmd_swapon_auto(),
         "mkswap.raw" => disk_cmds::cmd_mkswap_raw(rest),
 
+        "exec" => {
+            if a1.is_empty() {
+                println!("Usage: exec <path> [args...]");
+            } else {
+                let argv: alloc::vec::Vec<&str> =
+                    core::iter::once(a1)
+                    .chain(rest[a1.len()..].split_whitespace())
+                    .collect();
+                cmd_exec(a1, &argv);
+            }
+        }
+
         "echo"     => system::cmd_echo(rest),
         "history"  => system::cmd_history(),
         "info"     => system::cmd_info(),
@@ -403,6 +427,8 @@ pub fn execute(input: &str) {
         "poweroff" | "shutdown" | "halt" => system::cmd_poweroff(),
         "reboot"   | "restart"           => system::cmd_reboot(),
         "ps"       => system::cmd_ps(),
+        "ldconfig" => system::cmd_ldconfig(rest),
+        "ldd"      => system::cmd_ldd(a1),
         "top"      => system::cmd_top(),
         "swaptest" => system::cmd_swaptest(),
         "nice"     => system::cmd_nice(a1, a2),

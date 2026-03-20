@@ -24,6 +24,7 @@ mod gdt;
 mod grub;
 mod interrupts;
 mod miku_extfs;
+mod ldso;
 pub mod mkfs;
 mod net;
 mod pmm;
@@ -37,10 +38,17 @@ mod shell;
 pub mod stdin;
 pub mod timing;
 mod vmm;
+mod elf;
+mod elf_loader;
+mod exec_elf;
+pub mod user_stdin;
 mod vfs;
+pub mod dynlink;
+pub mod mmap;
 mod gpt;
 mod swap;
 mod swap_map;
+mod solib;
 
 unsafe extern "C" {
     static _kernel_end: u8;
@@ -58,8 +66,17 @@ unsafe extern "C" fn kernel_main_grub(mb2_phys: u64) -> ! {
 }
 
 fn kernel_main() -> ! {
-    serial_println!("[kern] MikuOS starting (Release v0.1.2)");
+    serial_println!("[kern] MikuOS starting (Release v0.1.4)");
     gdt::init();
+    unsafe {
+        let cr0: u64;
+        core::arch::asm!("mov {}, cr0", out(reg) cr0);
+        core::arch::asm!("mov cr0, {}", in(reg) (cr0 & !(1u64 << 2)) | (1u64 << 1));
+        let cr4: u64;
+        core::arch::asm!("mov {}, cr4", out(reg) cr4);
+        core::arch::asm!("mov cr4, {}", in(reg) cr4 | (1u64 << 9) | (1u64 << 10));
+    }
+    serial_println!("[sse] enabled (CR0.EM=0 CR0.MP=1 CR4.OSFXSR=1 CR4.OSXMMEXCPT=1)");
     syscall::init();
     interrupts::init_idt();
     interrupts::init_pics();
@@ -94,6 +111,9 @@ fn kernel_main() -> ! {
 
     boot_step!("Physical memory manager", Ok(()));
     boot_step!("Virtual file system",       vfs::core::init_vfs());
+    crate::solib::init();
+    crate::solib::ldconfig();
+    boot_step!("Shared library cache",      Ok(()));
     boot_step!("Network subsystem",         net::init());
     scheduler::init_main_thread();
     scheduler::init_workers(4);
@@ -106,6 +126,7 @@ fn kernel_main() -> ! {
     scheduler::spawn_named(shell::shell_thread, "shell", 2);
     console::clear_screen();
     shell::init();
+
     boot::mark_done();
     loop {
         x86_64::instructions::interrupts::enable_and_hlt();

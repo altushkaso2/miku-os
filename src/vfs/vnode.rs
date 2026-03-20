@@ -165,8 +165,13 @@ impl VNode {
     }
 
     #[inline]
+    pub fn is_ext_backed(&self) -> bool {
+        self.fs_type.is_ext_family() && self.ext2_ino != 0
+    }
+
+    #[inline]
     pub fn is_ext2_backed(&self) -> bool {
-        self.fs_type == FsType::Ext2 && self.ext2_ino != 0
+        self.is_ext_backed()
     }
 
     pub fn stat(&self) -> VNodeStat {

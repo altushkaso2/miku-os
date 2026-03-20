@@ -113,31 +113,8 @@ pub fn impl_write(path: &str, text: &str, prefix: &'static str) {
     let result = with_ext2_pub(|fs| -> Result<u32, FsError> {
         fs.reader.reset_io();
         let (parent_ino, filename) = resolve_parent_and_name(fs, path)?;
-        let use_extents = fs.superblock.has_extents();
         let data = text.as_bytes();
-        let ino = match fs.ext2_lookup_in_dir(parent_ino, filename)? {
-            Some(ino) => {
-                if use_extents {
-                    fs.ext4_truncate(ino)?;
-                    fs.ext4_write_file(ino, data, 0)?;
-                } else {
-                    fs.ext2_truncate(ino)?;
-                    fs.ext2_write_file(ino, data, 0)?;
-                }
-                ino
-            }
-            None => {
-                if use_extents {
-                    let ino = fs.ext4_create_file(parent_ino, filename, 0o644)?;
-                    fs.ext4_write_file(ino, data, 0)?;
-                    ino
-                } else {
-                    let ino = fs.ext2_create_file(parent_ino, filename, 0o644)?;
-                    fs.ext2_write_file(ino, data, 0)?;
-                    ino
-                }
-            }
-        };
+        let ino = fs.ext3_write_file_create_or_overwrite(parent_ino, filename, 0o644, data)?;
         crate::serial_println!("[io] ata_commands={}", fs.reader.io_count);
         Ok(ino)
     });

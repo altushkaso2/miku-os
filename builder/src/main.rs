@@ -35,10 +35,7 @@ fn ask_mb(prompt: &str, default_mb: u32, timeout_secs: u64) -> u32 {
         }
     });
     match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
-        Ok(ref s) if s.is_empty() => {
-            println!("Auto: {} MB", default_mb);
-            default_mb
-        }
+        Ok(ref s) if s.is_empty() => { println!("Auto: {} MB", default_mb); default_mb }
         Ok(s) => s.parse::<u32>().unwrap_or_else(|_| {
             println!("Invalid, using {} MB", default_mb);
             default_mb
@@ -56,11 +53,11 @@ fn parse_meminfo(content: &str, field: &str) -> u64 {
 }
 
 fn detect_qemu_ram() -> String {
-    let content  = fs::read_to_string("/proc/meminfo").unwrap_or_default();
-    let total_mb = parse_meminfo(&content, "MemTotal:") / 1024;
-    let free_mb  = parse_meminfo(&content, "MemFree:")  / 1024;
-    let buffers  = parse_meminfo(&content, "Buffers:")  / 1024;
-    let cached   = parse_meminfo(&content, "Cached:")   / 1024;
+    let content   = fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let total_mb  = parse_meminfo(&content, "MemTotal:") / 1024;
+    let free_mb   = parse_meminfo(&content, "MemFree:")  / 1024;
+    let buffers   = parse_meminfo(&content, "Buffers:")  / 1024;
+    let cached    = parse_meminfo(&content, "Cached:")   / 1024;
     let phys_free = free_mb + buffers + cached;
     let target_mb = ((phys_free as f64 * 0.8) as u64).min(total_mb).max(512);
     let ram = format!("{}M", target_mb);
@@ -77,7 +74,7 @@ fn check_grub_mkrescue() {
 }
 
 fn build_kernel(root: &Path, low_ram: bool) {
-    println!("Building kernel");
+    println!("\nBuilding kernel...");
     let mut cmd = Command::new("cargo");
     cmd.current_dir(root)
         .arg("build")
@@ -97,6 +94,57 @@ fn build_kernel(root: &Path, low_ram: bool) {
     if !cmd.status().expect("cargo build failed").success() {
         panic!("Kernel compilation failed");
     }
+    println!("[ok] Kernel built");
+}
+
+fn build_ldmiku(root: &Path, low_ram: bool) {
+    let ldmiku_dir = root.join("ld-miku");
+    if !ldmiku_dir.exists() {
+        println!("[!] ld-miku/ not found, skipping");
+        return;
+    }
+
+    println!("\nBuilding ld-miku.so  (src/lib/ld_miku/)...");
+
+    let ld_script = ldmiku_dir.join("ld_link.ld");
+
+    let rustflags = [
+        "-C relocation-model=pic",
+        "-C link-arg=-pie",
+        "-C link-arg=-z",  "-C link-arg=noexecstack",
+        "-C link-arg=-z",  "-C link-arg=now",
+        "-C link-arg=--no-dynamic-linker",
+        &format!("-C link-arg=-T{}", ld_script.display()),
+        "-C no-redzone=y",
+    ].join(" ");
+
+    let mut cmd = Command::new("cargo");
+        cmd.current_dir(&ldmiku_dir)
+            .env("RUSTFLAGS", &rustflags)
+            .arg("+nightly")
+            .arg("build")
+            .arg("--release")
+            .arg("--target").arg("x86_64-miku-ldso.json")
+            .arg("-Z").arg("json-target-spec")
+            .arg("-Z").arg("build-std=core")
+            .arg("-Z").arg("build-std-features=compiler-builtins-mem");
+
+    if low_ram { cmd.arg("--jobs").arg("1"); }
+
+    if !cmd.status().expect("cargo build ld-miku failed").success() {
+        panic!("ld-miku compilation failed");
+    }
+    println!("[ok] ld-miku.so built");
+
+    let bin_src = root.join("target/x86_64-miku-ldso/release/ld-miku");
+    let bin_dst = root.join("src/lib/ld_miku/ld-miku.bin");
+    if !bin_src.exists() {
+        panic!("ld-miku binary not found at {}", bin_src.display());
+    }
+    fs::copy(&bin_src, &bin_dst)
+        .unwrap_or_else(|e| panic!("Cannot copy ld-miku.bin: {}", e));
+    println!("[ok] ld-miku.bin → src/lib/ld_miku/ld-miku.bin ({} KB)",
+        fs::metadata(&bin_dst).unwrap().len() / 1024);
 }
 
 fn create_iso(root: &Path) {
@@ -109,9 +157,8 @@ fn create_iso(root: &Path) {
 
     let kernel_src = root.join("target/x86_64-unknown-none/debug/miku-os-release");
     let kernel_dst = iso_root.join("boot/kernel.elf");
-    fs::copy(&kernel_src, &kernel_dst).unwrap_or_else(|e| {
-        panic!("Cannot copy kernel: {}", e)
-    });
+    fs::copy(&kernel_src, &kernel_dst)
+        .unwrap_or_else(|e| panic!("Cannot copy kernel: {}", e));
 
     let grub_cfg_src = root.join("grub.cfg");
     let grub_cfg_dst = iso_root.join("boot/grub/grub.cfg");
@@ -129,40 +176,36 @@ fn create_iso(root: &Path) {
         .unwrap_or_else(|e| panic!("Cannot write grub.cfg: {}", e));
 
     let iso_path = out_dir.join("miku-os.iso");
-    println!("Creating ISO: {}", iso_path.display());
+    println!("\nCreating ISO: {}", iso_path.display());
     let status = Command::new("grub-mkrescue")
         .args(["-o", iso_path.to_str().unwrap(), iso_root.to_str().unwrap()])
         .status().expect("grub-mkrescue failed");
     if !status.success() { panic!("grub-mkrescue failed"); }
 
-    println!("[ok] ISO created: {}", iso_path.display());
-    println!("    Size: {} KB", fs::metadata(&iso_path).unwrap().len() / 1024);
+    println!("[ok] ISO: {}  ({} KB)",
+        iso_path.display(),
+        fs::metadata(&iso_path).unwrap().len() / 1024);
     fs::remove_dir_all(&iso_root).ok();
 }
 
 fn ensure_disk(path: &Path, size_mb: u32, label: &str) {
     if path.exists() {
-        println!("[ok] {} exists: {} ({} MB)", label, path.display(),
+        println!("[ok] {} exists ({} MB)", label,
             fs::metadata(path).unwrap().len() / (1024 * 1024));
         return;
     }
-    println!("[*] Creating {} disk: {} MB → {}", label, size_mb, path.display());
-    let status = Command::new("dd")
-        .args([
-            "if=/dev/zero",
-            &format!("of={}", path.display()),
-            "bs=1M",
-            &format!("count={}", size_mb),
-        ])
-        .status().expect("dd failed");
-    if !status.success() { panic!("dd failed for {}", label); }
-    println!("[ok] {} disk created: {} MB", label, size_mb);
+    println!("[*] Creating {} disk: {} MB", label, size_mb);
+    let ok = Command::new("dd")
+        .args(["if=/dev/zero",
+               &format!("of={}", path.display()),
+               "bs=1M",
+               &format!("count={}", size_mb)])
+        .status().expect("dd failed").success();
+    if !ok { panic!("dd failed for {}", label); }
+    println!("[ok] {} disk created", label);
 }
 
-struct DiskConfig {
-    main_mb:  u32,
-    data_mb:  u32,
-}
+struct DiskConfig { main_mb: u32, data_mb: u32 }
 
 impl DiskConfig {
     fn ask(root: &Path) -> Self {
@@ -170,16 +213,15 @@ impl DiskConfig {
         let data_exists = root.join("miku-os/data.img").exists();
 
         if main_exists && data_exists {
-            let main_mb = (fs::metadata(root.join("miku-os/disk.img")).unwrap().len()
-                / (1024 * 1024)) as u32;
-            let data_mb = (fs::metadata(root.join("miku-os/data.img")).unwrap().len()
-                / (1024 * 1024)) as u32;
-            return Self { main_mb, data_mb };
+            return Self {
+                main_mb: (fs::metadata(root.join("miku-os/disk.img")).unwrap().len() / (1024*1024)) as u32,
+                data_mb: (fs::metadata(root.join("miku-os/data.img")).unwrap().len() / (1024*1024)) as u32,
+            };
         }
 
-        println!("Disk Setup");
-        println!("  disk.img  →  drive 1  (swap + ext4 root, like /dev/sda)");
-        println!("  data.img  →  drive 2  (extra data storage, optional)");
+        println!("\nDisk Setup");
+        println!("  disk.img → drive 1 (ext4 root)");
+        println!("  data.img → drive 2 (extra, optional)");
 
         let main_mb = if main_exists {
             (fs::metadata(root.join("miku-os/disk.img")).unwrap().len() / (1024*1024)) as u32
@@ -187,40 +229,33 @@ impl DiskConfig {
             ask_mb("  disk.img size in MB (default 4096): ", 4096, 30)
         };
 
-        let want_data = ask_user("  Create data.img for extra storage? [y/N]: ", 15);
-        let data_mb = if want_data && !data_exists {
+        let data_mb = if ask_user("  Create data.img? [y/N]: ", 15) && !data_exists {
             ask_mb("  data.img size in MB (default 2048): ", 2048, 30)
         } else if data_exists {
             (fs::metadata(root.join("miku-os/data.img")).unwrap().len() / (1024*1024)) as u32
-        } else {
-            0
-        };
+        } else { 0 };
 
         Self { main_mb, data_mb }
     }
 }
 
 fn main() {
-    println!("MikuOS ISO Builder (Release)\n");
+    println!("MikuOS Builder\n");
 
-    let root = PathBuf::from("..").canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(".."));
-
-    let low_ram = ask_user("Low RAM mode? (for weak PCs) [y/N]: ", 10);
+    let root    = PathBuf::from("..").canonicalize().unwrap_or_else(|_| PathBuf::from(".."));
+    let low_ram = ask_user("Low RAM mode? [y/N]: ", 10);
 
     check_grub_mkrescue();
+    build_ldmiku(&root, low_ram);
     build_kernel(&root, low_ram);
     create_iso(&root);
 
-    let cfg = DiskConfig::ask(&root);
-
+    let cfg       = DiskConfig::ask(&root);
     let disk_path = root.join("miku-os/disk.img");
-    ensure_disk(&disk_path, cfg.main_mb, "main");
-
     let data_path = root.join("miku-os/data.img");
-    if cfg.data_mb > 0 {
-        ensure_disk(&data_path, cfg.data_mb, "data");
-    }
+
+    ensure_disk(&disk_path, cfg.main_mb, "main");
+    if cfg.data_mb > 0 { ensure_disk(&data_path, cfg.data_mb, "data"); }
 
     if !ask_user("\nLaunch QEMU? [y/N]: ", 10) { return; }
 
@@ -233,9 +268,7 @@ fn main() {
         "-drive".into(),
         format!("file={},format=raw,if=none,id=disk0,cache=unsafe,aio=threads",
             disk_path.display()),
-        "-device".into(),
-        "ide-hd,drive=disk0,bus=ide.0,unit=1,rotation_rate=1".into(),
-
+        "-device".into(), "ide-hd,drive=disk0,bus=ide.0,unit=1,rotation_rate=1".into(),
         "-serial".into(), "stdio".into(),
         "-display".into(), "gtk".into(),
         "-m".into(), ram,
@@ -250,20 +283,20 @@ fn main() {
         println!("[*] data.img attached as drive 2");
     }
 
-    let kvm_ok = Command::new("qemu-system-x86_64")
+    if Command::new("qemu-system-x86_64")
         .args(["-enable-kvm", "-version"]).output()
-        .map(|o| o.status.success()).unwrap_or(false);
-    if kvm_ok { args.push("-enable-kvm".into()); }
-
-    println!("  drive 1  →  disk.img  ({} MB)", cfg.main_mb);
-    if cfg.data_mb > 0 {
-        println!("  drive 2  →  data.img  ({} MB)", cfg.data_mb);
+        .map(|o| o.status.success()).unwrap_or(false)
+    {
+        args.push("-enable-kvm".into());
     }
 
-    println!("Starting QEMU");
-    let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    println!("\n  drive 1 → disk.img ({} MB)", cfg.main_mb);
+    if cfg.data_mb > 0 { println!("  drive 2 → data.img ({} MB)", cfg.data_mb); }
+
+    println!("Starting QEMU...");
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     Command::new("qemu-system-x86_64")
-        .args(&args_refs)
-        .spawn().expect("QEMU failed to start")
+        .args(&refs)
+        .spawn().expect("QEMU failed")
         .wait().unwrap();
 }

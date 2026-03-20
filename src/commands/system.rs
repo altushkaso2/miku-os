@@ -24,7 +24,7 @@ pub fn cmd_info() {
     let used_ram_kb   = pmm_used * 4 + heap_used / 1024;
     let free_ram_kb   = usable_ram_kb.saturating_sub(used_ram_kb);
 
-    cprintln!(57, 197, 187,  "  MikuOS v0.1.2");
+    cprintln!(57, 197, 187,  "  MikuOS v0.1.4");
     cprintln!(230, 240, 240, "  VNodes: {}/{}", vn, crate::vfs::MAX_VNODES);
     cprintln!(230, 240, 240, "  Mounts: {}", mn);
     cprintln!(230, 240, 240, "  Heap:   {} / {} KB", heap_used / 1024, heap_total / 1024);
@@ -207,6 +207,7 @@ pub fn cmd_help() {
     cprintln!(128, 222, 217, "  memmap                 physical memory map");
     cprintln!(128, 222, 217, "  reboot                   restart system");
     cprintln!(128, 222, 217, "  poweroff                 shutdown system");
+    println!("  exec <path>     - load and run ELF binary");
 }
 
 pub fn cmd_clear() {
@@ -469,4 +470,22 @@ fn parse_hex(s: &str) -> Option<u64> {
         v = v.checked_shl(4)?.checked_add(digit)?;
     }
     Some(v)
+}
+
+pub fn cmd_ldconfig(_args: &str) {
+    crate::solib::ldconfig();
+    let (count, bytes) = crate::solib::stats();
+    crate::println!("ldconfig: {} libraries cached ({} KB)", count, bytes / 1024);
+}
+
+pub fn cmd_ldd(_path: &str) {
+    let libs = crate::solib::list();
+    if libs.is_empty() {
+        crate::println!("  no cached libraries");
+        return;
+    }
+    for (name, size, loads, shared) in &libs {
+        let tag = if *shared { "shared" } else { "data" };
+        crate::println!("  {} ({} bytes, loaded {} times, {})", name, size, loads, tag);
+    }
 }

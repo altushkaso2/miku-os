@@ -3,10 +3,8 @@ on:
   push:
     tags:
       - "v*"
-
 permissions:
   contents: write
-
 jobs:
   build-release:
     runs-on: ubuntu-latest
@@ -16,33 +14,37 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y xorriso mtools grub-pc-bin grub-efi-amd64-bin git make gcc
+          sudo apt-get install -y xorriso mtools grub-pc-bin grub-efi-amd64-bin git make gcc nasm
 
       - name: Install Rust Nightly
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src, llvm-tools-preview
 
+      - name: Build ld-miku.so
+        run: |
+          if [ ! -d "ld-miku" ]; then
+            echo "[!] ld-miku/ not found, skipping"
+            exit 0
+          fi
+          cd ld-miku
+          LD_SCRIPT="$(pwd)/ld_link.ld"
+          export RUSTFLAGS="-C relocation-model=pic -C link-arg=-pie -C link-arg=-z -C link-arg=noexecstack -C link-arg=-z -C link-arg=now -C link-arg=--no-dynamic-linker -C link-arg=-T${LD_SCRIPT} -C no-redzone=y"
+          cargo +nightly build --release --target x86_64-miku-ldso.json -Z json-target-spec -Z build-std=core -Z build-std-features=compiler-builtins-mem
+          mkdir -p ../src/lib/ld_miku
+          cp ../target/x86_64-miku-ldso/release/ld-miku ../src/lib/ld_miku/ld-miku.bin
+          echo "[ok] ld-miku.bin: $(du -sh ../src/lib/ld_miku/ld-miku.bin)"
+
       - name: Build Kernel
         run: |
-          cargo build \
-            --target x86_64-unknown-none \
-            -Z build-std=core,compiler_builtins,alloc \
-            -Z build-std-features=compiler-builtins-mem
+          export RUSTFLAGS="-C relocation-model=static -C link-arg=-Tlinker.ld -C link-arg=--no-dynamic-linker"
+          cargo build --target x86_64-unknown-none -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
 
       - name: Create ISO with GRUB
         run: |
           mkdir -p iso_root/boot/grub
           cp target/x86_64-unknown-none/debug/miku-os-release iso_root/boot/kernel.elf
-          cat << 'EOF' > iso_root/boot/grub/grub.cfg
-          set timeout=0
-          set default=0
-
-          menuentry "Miku OS" {
-              multiboot2 /boot/kernel.elf
-              boot
-          }
-          EOF
+          printf 'set timeout=-1\nset default=0\nmenuentry "Miku OS" {\n    multiboot2 /boot/kernel.elf\n    boot\n}\n' > iso_root/boot/grub/grub.cfg
           grub-mkrescue -o miku-os.iso iso_root
 
       - name: Check Artifacts
@@ -50,7 +52,7 @@ jobs:
           ls -lh miku-os.iso
           file miku-os.iso
 
-      - name: Publish Pre-Release
+      - name: Publish Release
         uses: softprops/action-gh-release@v1
         with:
           files: miku-os.iso

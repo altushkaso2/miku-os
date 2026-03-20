@@ -279,7 +279,7 @@ impl MikuFS {
             offset += 8;
         }
         let desc_disk_block = self.journal_block_to_disk(self.txn_desc_pos)?;
-        self.write_block_data_direct(desc_disk_block, &desc[..bs])?;
+        self.write_block_data(desc_disk_block, &desc[..bs])?;
 
         for i in 0..tag_count {
             let fs_block = self.txn_tags[i].fs_block;
@@ -288,7 +288,7 @@ impl MikuFS {
             self.read_block_into(fs_block, &mut buf[..bs])?;
             let jdb = self.journal_block_to_disk(journal_pos)?;
             if jdb != 0 {
-                self.write_block_data_direct(jdb, &buf[..bs])?;
+                self.write_block_data(jdb, &buf[..bs])?;
             }
         }
 
@@ -299,7 +299,7 @@ impl MikuFS {
         commit[4..8].copy_from_slice(&JBD_COMMIT_BLOCK.to_be_bytes());
         commit[8..12].copy_from_slice(&self.journal_seq.to_be_bytes());
         let commit_disk_block = self.journal_block_to_disk(self.journal_pos)?;
-        self.write_block_data_direct(commit_disk_block, &commit[..bs])?;
+        self.write_block_data(commit_disk_block, &commit[..bs])?;
         self.journal_pos = self.advance_journal_pos(self.journal_pos);
 
         self.mark_journal_dirty_fast()?;
@@ -312,15 +312,15 @@ impl MikuFS {
         Ok(())
     }
 
-    fn mark_journal_dirty_fast(&mut self) -> Result<(), FsError> {
+	fn mark_journal_dirty_fast(&mut self) -> Result<(), FsError> {
         let disk_blk = self.journal_block_to_disk(0)?;
         if disk_blk == 0 { return Err(FsError::CorruptedFs); }
-        let lba = self.block_to_lba(disk_blk);
-        let mut sector = [0u8; 512];
-        self.reader.read_sector(lba, &mut sector)?;
-        sector[24..28].copy_from_slice(&self.journal_seq.to_be_bytes());
-        sector[28..32].copy_from_slice(&self.txn_desc_pos.to_be_bytes());
-        self.reader.write_sector(lba, &sector)?;
+        let bs = self.block_size as usize;
+        let mut buf = [0u8; 4096];
+        self.read_block_into(disk_blk, &mut buf[..bs])?;
+        buf[24..28].copy_from_slice(&self.journal_seq.to_be_bytes());
+        buf[28..32].copy_from_slice(&self.txn_desc_pos.to_be_bytes());
+        self.write_block_data(disk_blk, &buf[..bs])?;
         Ok(())
     }
 

@@ -35,17 +35,17 @@ struct RunQueueInner {
     len:  usize,
 }
 
-struct LockFreeRunQueue(UnsafeCell<RunQueueInner>);
+struct SingleCpuRunQueue(UnsafeCell<RunQueueInner>);
 
-unsafe impl Sync for LockFreeRunQueue {}
-unsafe impl Send for LockFreeRunQueue {}
+unsafe impl Sync for SingleCpuRunQueue {}
+unsafe impl Send for SingleCpuRunQueue {}
 
-static RUN_QUEUE: LockFreeRunQueue = LockFreeRunQueue(UnsafeCell::new(RunQueueInner {
+static RUN_QUEUE: SingleCpuRunQueue = SingleCpuRunQueue(UnsafeCell::new(RunQueueInner {
     head: null_mut(),
     len:  0,
 }));
 
-impl LockFreeRunQueue {
+impl SingleCpuRunQueue {
     unsafe fn push_raw(&self, p: *mut Process) {
         let inner = &mut *self.0.get();
         let p_vr  = (*p).vruntime.load(Ordering::Relaxed);
@@ -318,6 +318,8 @@ pub fn reap_dead() {
     for pid in dead_pids {
         PROC_INDEX.clear(pid);
 
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
+
         let mut table = PROC_TABLE.lock();
         let collectable = table.get(&pid).map_or(false, |p| {
             p.state.load(Ordering::Relaxed) == STATE_DEAD
@@ -328,6 +330,7 @@ pub fn reap_dead() {
 
         if let Some(mut p) = table.remove(&pid) {
             drop(table);
+            crate::mmap::vma_cleanup(p.cr3);
             if let Some(phys) = p.user_stack_phys.take() {
                 crate::pmm::free_frames(phys, crate::process::USER_STACK_PAGES);
             }
@@ -350,6 +353,26 @@ pub fn spawn_named(entry: fn() -> !, name: &'static str, priority: u8) -> u64 {
     reap_dead();
     add_process(p);
     pid
+}
+
+pub fn add_user_process(p: Box<Process>) -> u64 {
+    let pid = p.pid;
+    reap_dead();
+    add_process(p);
+    pid
+}
+
+pub fn waitpid(pid: u64) {
+    loop {
+        let alive = interrupts::without_interrupts(|| {
+            let ptr = unsafe { PROC_INDEX.get_raw(pid) };
+            if ptr.is_null() { return false; }
+            let state = unsafe { &*ptr }.state.load(Ordering::Relaxed);
+            state != STATE_DEAD
+        });
+        if !alive { break; }
+        yield_now();
+    }
 }
 
 pub fn current_pid() -> u64 {

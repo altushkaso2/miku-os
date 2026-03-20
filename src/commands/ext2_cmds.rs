@@ -20,7 +20,7 @@ const EMPTY_FS: MikuFS = MikuFS {
     reader: DiskReader {
         drive:     AtaDrive::EMPTY,
         start_lba: 0,
-        io_count: 0,
+        io_count:  0,
     },
     journal_seq:      0,
     journal_pos:      0,
@@ -36,90 +36,126 @@ const EMPTY_FS: MikuFS = MikuFS {
     block_cache:      None,
     superblock_dirty: false,
     groups_dirty:     [false; 32],
-    last_sync_ticks: 0,
+    last_sync_ticks:  0,
     journal_inode_cached: None,
+    alloc_hint: [0u32; 32],
 };
 
-static mut FS_SLOTS:     [MikuFS; MAX_MOUNTS] = [EMPTY_FS; MAX_MOUNTS];
-static mut FS_READY:     [bool; MAX_MOUNTS]   = [false; MAX_MOUNTS];
-static mut FS_DRIVE_IDX: [usize; MAX_MOUNTS]  = [0; MAX_MOUNTS];
-static mut FS_START_LBA: [u32; MAX_MOUNTS]    = [0; MAX_MOUNTS];
-static mut ACTIVE_SLOT:  usize                = 0;
+struct ExtFsState {
+    slots:       [MikuFS; MAX_MOUNTS],
+    ready:       [bool; MAX_MOUNTS],
+    drive_idx:   [usize; MAX_MOUNTS],
+    start_lba:   [u32; MAX_MOUNTS],
+    active_slot: usize,
+}
 
-static EXT2_LOCK: Mutex<()> = Mutex::new(());
+impl ExtFsState {
+    const fn new() -> Self {
+        Self {
+            slots:       [EMPTY_FS; MAX_MOUNTS],
+            ready:       [false; MAX_MOUNTS],
+            drive_idx:   [0; MAX_MOUNTS],
+            start_lba:   [0; MAX_MOUNTS],
+            active_slot: 0,
+        }
+    }
+
+    fn active_fs(&mut self) -> Option<&mut MikuFS> {
+        let slot = self.active_slot;
+        if self.ready[slot] { Some(&mut self.slots[slot]) } else { None }
+    }
+
+    fn find_free_slot(&self) -> Option<usize> {
+        self.ready.iter().position(|&r| !r)
+    }
+
+    fn is_already_mounted(&self, drive: usize, lba: u32) -> bool {
+        for i in 0..MAX_MOUNTS {
+            if self.ready[i] && self.drive_idx[i] == drive && self.start_lba[i] == lba {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+static STATE: Mutex<ExtFsState> = Mutex::new(ExtFsState::new());
 
 fn with_ext2<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut MikuFS) -> R,
 {
-    let _guard = EXT2_LOCK.lock();
-    unsafe {
-        let slot = ACTIVE_SLOT;
-        if !FS_READY[slot] { return None; }
-        Some(f(&mut FS_SLOTS[slot]))
-    }
+    STATE.lock().active_fs().map(f)
 }
 
 pub fn is_ext2_ready() -> bool {
-    let _guard = EXT2_LOCK.lock();
-    unsafe { FS_READY[ACTIVE_SLOT] }
+    let state = STATE.lock();
+    state.ready[state.active_slot]
 }
 
-pub unsafe fn ext_fs_version_tag() -> &'static str {
-    if !FS_READY[ACTIVE_SLOT] { return "ext"; }
-    FS_SLOTS[ACTIVE_SLOT].superblock.fs_version_str()
+pub fn active_fs_type() -> crate::vfs::types::FsType {
+    let state = STATE.lock();
+    let slot = state.active_slot;
+    if !state.ready[slot] {
+        return crate::vfs::types::FsType::Ext2;
+    }
+    match state.slots[slot].superblock.fs_version_str() {
+        "ext4" => crate::vfs::types::FsType::Ext4,
+        "ext3" => crate::vfs::types::FsType::Ext3,
+        _      => crate::vfs::types::FsType::Ext2,
+    }
+}
+
+pub fn ext_fs_version_tag() -> &'static str {
+    let state = STATE.lock();
+    let slot = state.active_slot;
+    if !state.ready[slot] { return "ext"; }
+    state.slots[slot].superblock.fs_version_str()
 }
 
 pub fn with_ext2_pub<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut MikuFS) -> R,
 {
-    let _guard = EXT2_LOCK.lock();
-    unsafe {
-        let slot = ACTIVE_SLOT;
-        if !FS_READY[slot] { return None; }
-        Some(f(&mut FS_SLOTS[slot]))
-    }
+    STATE.lock().active_fs().map(f)
 }
 
-pub unsafe fn force_unmount() {
-    let _guard = EXT2_LOCK.lock();
-    let slot = ACTIVE_SLOT;
-    FS_READY[slot] = false;
-    FS_SLOTS[slot].block_cache = None;
-        FS_SLOTS[slot].journal_inode_cached = None;
+pub fn force_unmount() {
+    let mut state = STATE.lock();
+    let slot = state.active_slot;
+    state.ready[slot] = false;
+    state.slots[slot].block_cache = None;
+    state.slots[slot].journal_inode_cached = None;
 }
 
 pub fn cmd_fs_list() {
-    let _g = EXT2_LOCK.lock();
+    let state = STATE.lock();
     cprintln!(57, 197, 187, "  Mounted filesystems:");
-    unsafe {
-        let mut any = false;
-        for slot in 0..MAX_MOUNTS {
-            if FS_READY[slot] {
-                any = true;
-                let version = FS_SLOTS[slot].superblock.fs_version_str();
-                let drive   = FS_DRIVE_IDX[slot];
-                let lba     = FS_START_LBA[slot];
-                let free_b  = FS_SLOTS[slot].superblock.free_blocks_count();
-                let total_b = FS_SLOTS[slot].superblock.blocks_count();
-                let bs      = FS_SLOTS[slot].block_size;
-                let marker  = if slot == ACTIVE_SLOT { " <- active" } else { "" };
-                println!(
-                    "  [{}] {} drive={} lba={} free={}/{} ({} MB){}",
-                    slot, version, drive, lba,
-                    free_b, total_b,
-                    free_b as u64 * bs as u64 / (1024 * 1024),
-                    marker
-                );
-            } else {
-                let marker = if slot == ACTIVE_SLOT { " <- active" } else { "" };
-                println!("  [{}] <empty>{}", slot, marker);
-            }
+    let mut any = false;
+    for slot in 0..MAX_MOUNTS {
+        if state.ready[slot] {
+            any = true;
+            let version = state.slots[slot].superblock.fs_version_str();
+            let drive   = state.drive_idx[slot];
+            let lba     = state.start_lba[slot];
+            let free_b  = state.slots[slot].superblock.free_blocks_count();
+            let total_b = state.slots[slot].superblock.blocks_count();
+            let bs      = state.slots[slot].block_size;
+            let marker  = if slot == state.active_slot { " <- active" } else { "" };
+            println!(
+                "  [{}] {} drive={} lba={} free={}/{} ({} MB){}",
+                slot, version, drive, lba,
+                free_b, total_b,
+                free_b as u64 * bs as u64 / (1024 * 1024),
+                marker
+            );
+        } else {
+            let marker = if slot == state.active_slot { " <- active" } else { "" };
+            println!("  [{}] <empty>{}", slot, marker);
         }
-        if !any {
-            crate::print_warn!("  no filesystems mounted");
-        }
+    }
+    if !any {
+        crate::print_warn!("  no filesystems mounted");
     }
 }
 
@@ -128,48 +164,44 @@ pub fn cmd_fs_select(args: &str) {
         Ok(n) if n < MAX_MOUNTS => n,
         _ => { print_error!("  usage: fs.select <0|1>"); return; }
     };
-    let _g = EXT2_LOCK.lock();
-    unsafe {
-        if !FS_READY[slot] {
-            crate::print_warn!("  slot {} is empty - switching anyway", slot);
-        }
-        ACTIVE_SLOT = slot;
-        print_success!("  active slot = {}", slot);
-        if FS_READY[slot] {
-            let version = FS_SLOTS[slot].superblock.fs_version_str();
-            let drive   = FS_DRIVE_IDX[slot];
-            let lba     = FS_START_LBA[slot];
-            println!("  {} on drive {} lba={}", version, drive, lba);
-        }
+    let mut state = STATE.lock();
+    if !state.ready[slot] {
+        crate::print_warn!("  slot {} is empty - switching anyway", slot);
+    }
+    state.active_slot = slot;
+    print_success!("  active slot = {}", slot);
+    if state.ready[slot] {
+        let version = state.slots[slot].superblock.fs_version_str();
+        let drive   = state.drive_idx[slot];
+        let lba     = state.start_lba[slot];
+        println!("  {} on drive {} lba={}", version, drive, lba);
     }
 }
 
 pub fn cmd_fs_umount(args: &str) {
+    let mut state = STATE.lock();
     let slot: usize = if args.trim().is_empty() {
-        unsafe { ACTIVE_SLOT }
+        state.active_slot
     } else {
         match args.trim().parse() {
             Ok(n) if n < MAX_MOUNTS => n,
             _ => { print_error!("  usage: fs.umount [0|1]"); return; }
         }
     };
-    let _g = EXT2_LOCK.lock();
-    unsafe {
-        if !FS_READY[slot] {
-            crate::print_warn!("  slot {} is already empty", slot);
-            return;
-        }
-        let _ = FS_SLOTS[slot].flush_all_dirty_metadata();
-        FS_READY[slot] = false;
-        FS_SLOTS[slot].block_cache = None;
-        FS_SLOTS[slot].journal_inode_cached = None;
-        print_success!("  slot {} unmounted", slot);
-        if ACTIVE_SLOT == slot {
-            let other = 1 - slot;
-            if FS_READY[other] {
-                ACTIVE_SLOT = other;
-                println!("  active slot switched to {}", other);
-            }
+    if !state.ready[slot] {
+        crate::print_warn!("  slot {} is already empty", slot);
+        return;
+    }
+    let _ = state.slots[slot].flush_all_dirty_metadata();
+    state.ready[slot] = false;
+    state.slots[slot].block_cache = None;
+    state.slots[slot].journal_inode_cached = None;
+    print_success!("  slot {} unmounted", slot);
+    if state.active_slot == slot {
+        let other = 1 - slot;
+        if state.ready[other] {
+            state.active_slot = other;
+            println!("  active slot switched to {}", other);
         }
     }
 }
@@ -212,37 +244,18 @@ fn make_ata_drive(idx: usize) -> AtaDrive {
 }
 
 pub fn invalidate_drive_mounts(drive_idx: usize, start_lba: u32) {
-    let _g = EXT2_LOCK.lock();
-    unsafe {
-        for i in 0..MAX_MOUNTS {
-            if FS_READY[i] && FS_DRIVE_IDX[i] == drive_idx && FS_START_LBA[i] == start_lba {
-                let _ = FS_SLOTS[i].flush_all_dirty_metadata();
-                FS_READY[i] = false;
-                FS_SLOTS[i].block_cache = None;
-                FS_SLOTS[i].journal_inode_cached = None;
-                serial_println!("[miku_extfs] slot {} invalidated (drive {} lba {} reformatted)", i, drive_idx, start_lba);
-            }
+    let mut state = STATE.lock();
+    for i in 0..MAX_MOUNTS {
+        if state.ready[i] && state.drive_idx[i] == drive_idx && state.start_lba[i] == start_lba {
+            let _ = state.slots[i].flush_all_dirty_metadata();
+            state.ready[i] = false;
+            state.slots[i].block_cache = None;
+            state.slots[i].journal_inode_cached = None;
+            serial_println!(
+                "[miku_extfs] slot {} invalidated (drive {} lba {} reformatted)",
+                i, drive_idx, start_lba
+            );
         }
-    }
-}
-
-fn find_free_slot() -> Option<usize> {
-    unsafe {
-        for i in 0..MAX_MOUNTS {
-            if !FS_READY[i] { return Some(i); }
-        }
-        None
-    }
-}
-
-fn is_already_mounted(drive_index: usize, start_lba: u32) -> bool {
-    unsafe {
-        for i in 0..MAX_MOUNTS {
-            if FS_READY[i] && FS_DRIVE_IDX[i] == drive_index && FS_START_LBA[i] == start_lba {
-                return true;
-            }
-        }
-        false
     }
 }
 
@@ -254,7 +267,7 @@ pub fn cmd_ext2_mount(args: &str) {
     if drive_str.is_empty() {
         serial_println!("[miku_extfs] scanning all drives...");
         for &i in &[2usize, 1, 3, 0] {
-            if is_already_mounted(i, 0) {
+            if STATE.lock().is_already_mounted(i, 0) {
                 serial_println!("[miku_extfs] drive {} lba 0 - already mounted, skip", i);
                 continue;
             }
@@ -297,7 +310,14 @@ pub fn cmd_ext2_mount(args: &str) {
 }
 
 fn try_mount(drive_index: usize, start_lba: u32) -> bool {
-    let slot = match find_free_slot() {
+    let mut state = STATE.lock();
+
+    if state.is_already_mounted(drive_index, start_lba) {
+        serial_println!("[miku_extfs] drive {} lba {} already mounted", drive_index, start_lba);
+        return false;
+    }
+
+    let slot = match state.find_free_slot() {
         Some(s) => s,
         None => {
             print_error!("  all {} mount slots used - run fs.umount first", MAX_MOUNTS);
@@ -306,27 +326,21 @@ fn try_mount(drive_index: usize, start_lba: u32) -> bool {
     };
 
     let drive = make_ata_drive(drive_index);
-    unsafe {
-        FS_READY[slot] = false;
-        FS_SLOTS[slot].reader = DiskReader::new_partitioned(drive, start_lba);
-        FS_SLOTS[slot].block_cache = None;
-        FS_SLOTS[slot].journal_inode_cached = None;
-    }
+    state.ready[slot] = false;
+    state.slots[slot].reader = DiskReader::new_partitioned(drive, start_lba);
+    state.slots[slot].block_cache = None;
+    state.slots[slot].journal_inode_cached = None;
 
     let mut sector = [0u8; 512];
 
-    let reader = unsafe { &mut FS_SLOTS[slot].reader };
-    match reader.read_sector(2, &mut sector) {
-        Ok(()) => {}
-        Err(e) => {
-            serial_println!(
-                "[miku_extfs] drive {} lba {} - cannot read sector 2: {:?}",
-                drive_index, start_lba, e
-            );
-            return false;
-        }
+    if state.slots[slot].reader.read_sector(2, &mut sector).is_err() {
+        serial_println!(
+            "[miku_extfs] drive {} lba {} - cannot read sector 2",
+            drive_index, start_lba
+        );
+        return false;
     }
-    unsafe { FS_SLOTS[slot].superblock.data[0..512].copy_from_slice(&sector); }
+    state.slots[slot].superblock.data[0..512].copy_from_slice(&sector);
 
     let magic_lo = u16::from_le_bytes([sector[56], sector[57]]);
     if magic_lo != EXT2_MAGIC {
@@ -337,42 +351,36 @@ fn try_mount(drive_index: usize, start_lba: u32) -> bool {
         return false;
     }
 
-    let reader = unsafe { &mut FS_SLOTS[slot].reader };
-    match reader.read_sector(3, &mut sector) {
-        Ok(()) => {}
-        Err(e) => {
-            serial_println!(
-                "[miku_extfs] drive {} lba {} - cannot read sector 3: {:?}",
-                drive_index, start_lba, e
-            );
-            return false;
-        }
+    if state.slots[slot].reader.read_sector(3, &mut sector).is_err() {
+        serial_println!(
+            "[miku_extfs] drive {} lba {} - cannot read sector 3",
+            drive_index, start_lba
+        );
+        return false;
     }
-    unsafe { FS_SLOTS[slot].superblock.data[512..1024].copy_from_slice(&sector); }
+    state.slots[slot].superblock.data[512..1024].copy_from_slice(&sector);
 
     serial_println!("[miku_extfs] slot {} drive {} lba {} - found!", slot, drive_index, start_lba);
 
-    let block_size       = unsafe { FS_SLOTS[slot].superblock.block_size() };
-    let inodes_per_group = unsafe { FS_SLOTS[slot].superblock.inodes_per_group() };
-    let blocks_per_group = unsafe { FS_SLOTS[slot].superblock.blocks_per_group() };
-    let blocks_count     = unsafe { FS_SLOTS[slot].superblock.blocks_count() };
-    let first_data_block = unsafe { FS_SLOTS[slot].superblock.first_data_block() };
+    let block_size       = state.slots[slot].superblock.block_size();
+    let inodes_per_group = state.slots[slot].superblock.inodes_per_group();
+    let blocks_per_group = state.slots[slot].superblock.blocks_per_group();
+    let blocks_count     = state.slots[slot].superblock.blocks_count();
+    let first_data_block = state.slots[slot].superblock.first_data_block();
     let usable           = blocks_count.saturating_sub(first_data_block);
     let group_count      = if blocks_per_group == 0 { 0 }
         else { (usable + blocks_per_group - 1) / blocks_per_group };
-    let gd_size          = unsafe { FS_SLOTS[slot].superblock.group_desc_size() } as usize;
+    let gd_size          = state.slots[slot].superblock.group_desc_size() as usize;
 
     if group_count as usize > 32 {
         print_error!("  miku_extfs: too many block groups ({})", group_count);
         return false;
     }
 
-    unsafe {
-        FS_SLOTS[slot].block_size       = block_size;
-        FS_SLOTS[slot].inodes_per_group = inodes_per_group;
-        FS_SLOTS[slot].blocks_per_group = blocks_per_group;
-        FS_SLOTS[slot].group_count      = group_count;
-    }
+    state.slots[slot].block_size       = block_size;
+    state.slots[slot].inodes_per_group = inodes_per_group;
+    state.slots[slot].blocks_per_group = blocks_per_group;
+    state.slots[slot].group_count      = group_count;
 
     let gdt_block      = if block_size == 1024 { 2 } else { 1 };
     let spb            = block_size / 512;
@@ -380,13 +388,12 @@ fn try_mount(drive_index: usize, start_lba: u32) -> bool {
     let total_gd_bytes = group_count as usize * gd_size;
     let total_sectors  = ((total_gd_bytes + 511) / 512) as u32;
 
-    let reader        = unsafe { &mut FS_SLOTS[slot].reader };
     let mut carry     = [0u8; 64];
     let mut carry_len = 0usize;
     let mut gd_idx    = 0usize;
 
     for s in 0..total_sectors {
-        if reader.read_sector(gdt_start_lba + s, &mut sector).is_err() {
+        if state.slots[slot].reader.read_sector(gdt_start_lba + s, &mut sector).is_err() {
             serial_println!("[miku_extfs] gdt read error at lba {}", gdt_start_lba + s);
             return false;
         }
@@ -395,20 +402,16 @@ fn try_mount(drive_index: usize, start_lba: u32) -> bool {
             let need = gd_size - carry_len;
             carry[carry_len..gd_size].copy_from_slice(&sector[..need]);
             if gd_idx < group_count as usize {
-                unsafe {
-                    FS_SLOTS[slot].groups[gd_idx].data[..gd_size]
-                        .copy_from_slice(&carry[..gd_size]);
-                }
+                state.slots[slot].groups[gd_idx].data[..gd_size]
+                    .copy_from_slice(&carry[..gd_size]);
                 gd_idx += 1;
             }
             pos = need;
             carry_len = 0;
         }
         while pos + gd_size <= 512 && gd_idx < group_count as usize {
-            unsafe {
-                FS_SLOTS[slot].groups[gd_idx].data[..gd_size]
-                    .copy_from_slice(&sector[pos..pos + gd_size]);
-            }
+            state.slots[slot].groups[gd_idx].data[..gd_size]
+                .copy_from_slice(&sector[pos..pos + gd_size]);
             gd_idx += 1;
             pos    += gd_size;
         }
@@ -419,34 +422,32 @@ fn try_mount(drive_index: usize, start_lba: u32) -> bool {
         }
     }
 
-    unsafe {
-        FS_READY[slot]     = true;
-        FS_DRIVE_IDX[slot] = drive_index;
-        FS_START_LBA[slot] = start_lba;
-        ACTIVE_SLOT        = slot;
+    state.ready[slot]     = true;
+    state.drive_idx[slot] = drive_index;
+    state.start_lba[slot] = start_lba;
+    state.active_slot     = slot;
 
-        FS_SLOTS[slot].init_cache();
-        let _ = FS_SLOTS[slot].init_journal();
-        let _ = FS_SLOTS[slot].warm_cache();
+    state.slots[slot].init_cache();
+    let _ = state.slots[slot].init_journal();
+    let _ = state.slots[slot].warm_cache();
 
-        if FS_SLOTS[slot].journal_active
-            && !FS_SLOTS[slot]
-                .read_journal_superblock()
-                .map(|j| j.is_clean())
-                .unwrap_or(true)
-        {
-            match FS_SLOTS[slot].ext3_recover() {
-                Ok(0) => {}
-                Ok(n) => serial_println!("[ext3] slot {} recovery: replayed {} blocks", slot, n),
-                Err(e) => serial_println!("[ext3] slot {} recovery failed: {:?}", slot, e),
-            }
+    if state.slots[slot].journal_active
+        && !state.slots[slot]
+            .read_journal_superblock()
+            .map(|j| j.is_clean())
+            .unwrap_or(true)
+    {
+        match state.slots[slot].ext3_recover() {
+            Ok(0) => {}
+            Ok(n) => serial_println!("[ext3] slot {} recovery: replayed {} blocks", slot, n),
+            Err(e) => serial_println!("[ext3] slot {} recovery failed: {:?}", slot, e),
         }
     }
 
-    let total_inodes = unsafe { FS_SLOTS[slot].superblock.inodes_count() };
-    let free_blocks  = unsafe { FS_SLOTS[slot].superblock.free_blocks_count() };
-    let free_inodes  = unsafe { FS_SLOTS[slot].superblock.free_inodes_count() };
-    let version      = unsafe { FS_SLOTS[slot].superblock.fs_version_str() };
+    let total_inodes = state.slots[slot].superblock.inodes_count();
+    let free_blocks  = state.slots[slot].superblock.free_blocks_count();
+    let free_inodes  = state.slots[slot].superblock.free_inodes_count();
+    let version      = state.slots[slot].superblock.fs_version_str();
 
     print_success!("  {} mounted -> slot {} (drive {} lba={})", version, slot, drive_index, start_lba);
     println!("  Block:   {} bytes", block_size);
@@ -561,10 +562,8 @@ pub fn cmd_ext2_write(path: &str, text: &str) {
     let disk_sw = crate::timing::Stopwatch::start();
     let result = with_ext2(|fs| -> Result<u32, FsError> {
         let (parent_ino, filename) = resolve_parent_and_name(fs, path)?;
-        match fs.ext2_lookup_in_dir(parent_ino, filename)? {
-            Some(ino) => { fs.ext2_truncate(ino)?; fs.ext3_write_file(ino, text.as_bytes(), 0)?; Ok(ino) }
-            None => { let ino = fs.ext3_create_file(parent_ino, filename, 0o644)?; fs.ext3_write_file(ino, text.as_bytes(), 0)?; Ok(ino) }
-        }
+        let data = text.as_bytes();
+        fs.ext3_write_file_create_or_overwrite(parent_ino, filename, 0o644, data)
     });
     let disk_ms = disk_sw.elapsed_ms();
     let render_sw = crate::timing::Stopwatch::start();

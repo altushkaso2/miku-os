@@ -94,7 +94,7 @@ pub fn cmd_ls(path: &str) {
     };
 
     let ext_tag = if ext_ready {
-        unsafe { crate::commands::ext2_cmds::ext_fs_version_tag() }
+        crate::commands::ext2_cmds::ext_fs_version_tag()
     } else { "" };
 
     cprintln!(120, 140, 140, "  ./");
@@ -644,7 +644,7 @@ pub fn cmd_rmdir(path: &str) {
         let abs = make_abs_path(path);
         let abs_str = unsafe { core::str::from_utf8_unchecked(&abs.0[..abs.1]) };
         use crate::commands::ext_cmds_common::impl_rmdir;
-        let tag = unsafe { crate::commands::ext2_cmds::ext_fs_version_tag() };
+        let tag = crate::commands::ext2_cmds::ext_fs_version_tag();
         impl_rmdir(abs_str, tag);
     }
 
@@ -711,7 +711,7 @@ pub fn cmd_link(existing: &str, new_name: &str) {
 
 pub fn cmd_readlink(path: &str) {
     let cwd = SESSION.lock().cwd;
-    match with_vfs_ro(|v| v.readlink(cwd, path)) {
+    match with_vfs(|v| v.readlink(cwd, path)) {
         Ok(target) => cprintln!(230, 240, 240, "  {}", target.as_str()),
         Err(e) => print_error!("readlink: {:?}", e),
     }
@@ -777,32 +777,37 @@ pub fn cmd_mount_list() {
     cprintln!(230, 240, 240, "  devfs         /dev          devfs");
     cprintln!(230, 240, 240, "  procfs        /proc         procfs");
 
-    let has_ext2 = with_vfs_ro(|vfs| vfs.ext2_mount_active);
+    let is_mounted = with_vfs_ro(|vfs| vfs.ext2_mount_active);
 
-    if has_ext2 {
-        cprintln!(230, 240, 240, "  ext2          /mnt          ext2");
+    if is_mounted {
+        let fs_name = crate::commands::ext2_cmds::active_fs_type().as_str();
+        cprintln!(230, 240, 240, "  {:<14}/mnt          {}", fs_name, fs_name);
     }
 }
 
 pub fn cmd_mount(fstype: &str, target: &str) {
     match fstype {
-        "ext2" => {
+        "ext2" | "ext3" | "ext4" => {
             let mountpoint = if target.is_empty() { "/mnt" } else { target };
             mount_ext2_to_vfs(mountpoint);
         }
         _ => {
             print_error!("mount: unknown filesystem '{}'", fstype);
-            println!("  Supported: ext2");
+            println!("  Supported: ext2, ext3, ext4");
         }
     }
 }
 
 pub fn cmd_umount(path: &str) {
+    crate::commands::ext2_cmds::with_ext2_pub(|fs| {
+        let _ = fs.flush_all_dirty_metadata();
+    });
+
     let cwd = SESSION.lock().cwd;
     let result = with_vfs(|vfs| {
         let id = vfs.resolve_path(cwd, path)?;
 
-        if vfs.nodes[id].fs_type != FsType::Ext2 {
+        if !vfs.nodes[id].fs_type.is_ext_family() {
             return Err(VfsError::InvalidArgument);
         }
 
@@ -814,6 +819,8 @@ pub fn cmd_umount(path: &str) {
 
         Ok(())
     });
+
+    crate::commands::ext2_cmds::force_unmount();
 
     match result {
         Ok(()) => print_success!("  unmounted {}", path),
@@ -850,7 +857,7 @@ fn mount_ext2_to_vfs(mountpoint: &str) {
             Err(e) => return Err(e),
         };
 
-        vfs.nodes[mount_id].fs_type = FsType::Ext2;
+        vfs.nodes[mount_id].fs_type = crate::commands::ext2_cmds::active_fs_type();
         vfs.nodes[mount_id].ext2_ino = EXT2_ROOT_INO;
         vfs.nodes[mount_id].children_loaded = false;
         vfs.ext2_mount_active = true;
@@ -866,7 +873,7 @@ fn mount_ext2_to_vfs(mountpoint: &str) {
     }
 }
 pub fn ext_version() -> &'static str {
-    unsafe { crate::commands::ext2_cmds::ext_fs_version_tag() }
+    crate::commands::ext2_cmds::ext_fs_version_tag()
 }
 
 pub fn cmd_extwrite(path: &str, text: &str) {
@@ -1021,15 +1028,11 @@ pub fn cmd_exttouch(path: &str) {
     use crate::commands::ext_cmds_common::resolve_parent_and_name;
     let result = with_ext2_pub(|fs| -> Result<u32, crate::miku_extfs::FsError> {
         let (parent_ino, filename) = resolve_parent_and_name(fs, abs_str)?;
-
+ 
         if let Some(ino) = fs.ext2_lookup_in_dir(parent_ino, filename)? {
             return Ok(ino);
         }
-        if fs.superblock.has_extents() {
-            fs.ext4_create_file(parent_ino, filename, 0o644)
-        } else {
-            fs.ext2_create_file(parent_ino, filename, 0o644)
-        }
+        fs.ext3_create_file(parent_ino, filename, 0o644)
     });
     match result {
         Some(Ok(ino)) => print_success!("  created inode {}", ino),

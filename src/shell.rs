@@ -190,17 +190,17 @@ lazy_static! {
 
 pub fn init() {
     serial_println!("[shell] init");
-    cprintln!(57, 197, 187, "MikuOS v0.1.2");
+    cprintln!(57, 197, 187, "MikuOS v0.1.4");
     prompt();
 }
 
 pub fn dispatcher(line: &str) {
     let line = line.trim();
     if line.is_empty() { return; }
-    
+
     let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
     let rest = rest.trim();
-    
+
     match cmd {
         "fs.list"   => ext2_cmds::cmd_fs_list(),
         "fs.select" => ext2_cmds::cmd_fs_select(rest),
@@ -428,12 +428,21 @@ pub fn kbd_thread() -> ! {
             got = true;
             if let Ok(Some(ev)) = keyboard.add_byte(sc) {
                 if let Some(key) = keyboard.process_keyevent(ev) {
-                    match key {
-                        DecodedKey::Unicode('\u{0003}') => {
-                            crate::net::CTRL_C.store(true, Ordering::SeqCst);
-                            crate::println!("^C");
+                    if crate::user_stdin::is_foreground_active() {
+                        match key {
+                            DecodedKey::Unicode(c) => {
+                                crate::user_stdin::feed_char(c);
+                            }
+                            DecodedKey::RawKey(_) => {}
                         }
-                        other => handle_keypress(other),
+                    } else {
+                        match key {
+                            DecodedKey::Unicode('\u{0003}') => {
+                                crate::net::CTRL_C.store(true, Ordering::SeqCst);
+                                crate::println!("^C");
+                            }
+                            other => handle_keypress(other),
+                        }
                     }
                 }
             }

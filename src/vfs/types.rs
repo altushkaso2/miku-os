@@ -139,12 +139,34 @@ impl core::fmt::Display for VfsError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FsType {
-    TmpFS = 0,
-    DevFS = 1,
+    TmpFS  = 0,
+    DevFS  = 1,
     ProcFS = 2,
-    Ext2 = 3,
-    CowFS = 4,
-    PipeFS = 5,
+    Ext2   = 3,
+    Ext3   = 4,
+    Ext4   = 5,
+    CowFS  = 6,
+    PipeFS = 7,
+}
+
+impl FsType {
+    #[inline]
+    pub fn is_ext_family(self) -> bool {
+        matches!(self, FsType::Ext2 | FsType::Ext3 | FsType::Ext4)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FsType::TmpFS  => "tmpfs",
+            FsType::DevFS  => "devfs",
+            FsType::ProcFS => "procfs",
+            FsType::Ext2   => "ext2",
+            FsType::Ext3   => "ext3",
+            FsType::Ext4   => "ext4",
+            FsType::CowFS  => "cowfs",
+            FsType::PipeFS => "pipefs",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

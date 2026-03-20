@@ -21,7 +21,6 @@ pub mod procfs;
 pub mod quota;
 pub mod security;
 pub mod slab;
-pub mod syscall;
 pub mod tmpfs;
 pub mod transaction;
 pub mod types;

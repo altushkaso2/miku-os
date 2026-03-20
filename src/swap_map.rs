@@ -1,7 +1,7 @@
 use spin::Mutex;
 use x86_64::structures::paging::PageTableFlags;
 
-const MAX_TRACKED: usize = 512 * 1024;
+const MAX_TRACKED: usize = 64 * 1024;
 
 #[derive(Copy, Clone)]
 struct ReverseEntry {
@@ -87,6 +87,13 @@ impl SwapMap {
         }
         None
     }
+
+    pub fn pick_victim_and_pin(&mut self) -> Option<(u64, u64, u64)> {
+        let victim = self.pick_victim()?;
+        let (phys, _, _) = victim;
+        self.set_pinned(phys, true);
+        Some(victim)
+    }
 }
 
 static SWAP_MAP: Mutex<SwapMap> = Mutex::new(SwapMap::new());
@@ -130,9 +137,7 @@ pub fn evict_one() -> Option<u64> {
         return None;
     }
 
-    let (phys, cr3, virt) = SWAP_MAP.lock().pick_victim()?;
-
-    SWAP_MAP.lock().set_pinned(phys, true);
+    let (phys, cr3, virt) = SWAP_MAP.lock().pick_victim_and_pin()?;
 
     let mut drive = crate::ata::AtaDrive::from_idx(swap::swap_drive_idx());
     let slot = match swap::swap_out_internal(phys, &mut drive) {

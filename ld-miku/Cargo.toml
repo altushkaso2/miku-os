@@ -1,0 +1,8 @@
+[package]
+name    = "ld-miku"
+version = "0.0.1"
+edition = "2021"
+
+[[bin]]
+name = "ld-miku"
+path = "../src/lib/ld_miku/main.rs"

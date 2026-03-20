@@ -36,6 +36,7 @@ pub struct MikuFS {
     pub groups_dirty: [bool; 32],
     pub last_sync_ticks: u64,
     pub journal_inode_cached: Option<Inode>,
+    pub alloc_hint: [u32; 32],
 }
 
 pub const MAX_DIR_ENTRIES: usize = 64;
