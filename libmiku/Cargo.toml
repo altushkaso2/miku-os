@@ -1,12 +1,14 @@
 [package]
-name    = "ld-miku"
+name    = "libmiku"
 version = "0.0.1"
 edition = "2021"
+
+[workspace]
 
 [profile.release]
 opt-level = 1
 lto = false
 
 [[bin]]
-name = "ld-miku"
-path = "../src/lib/ld_miku/main.rs"
+name = "libmiku"
+path = "../src/lib/libmiku/lib.rs"

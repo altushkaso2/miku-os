@@ -1,12 +1,11 @@
 extern crate alloc;
-use alloc::vec;
 use alloc::vec::Vec;
 use crate::elf_loader::{self, LoadError};
+use crate::vfs_read::{self, ReadError};
 use crate::vmm::AddressSpace;
 use crate::process::Process;
 use core::sync::atomic::Ordering;
 
-const READ_CHUNK: usize = 4096;
 const FRAME_R8_SLOT: usize = 7;
 
 #[derive(Debug)]
@@ -23,19 +22,30 @@ pub enum ExecError {
 impl ExecError {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::FsNotMounted   => "filesystem not mounted",
-            Self::FileNotFound   => "file not found",
+            Self::FsNotMounted => "filesystem not mounted",
+            Self::FileNotFound => "file not found",
             Self::NotRegularFile => "not a regular file",
-            Self::IoError        => "I/O error",
-            Self::Load(e)        => e.as_str(),
+            Self::IoError => "I/O error",
+            Self::Load(e) => e.as_str(),
             Self::NoAddressSpace => "failed to create address space",
-            Self::SpawnFailed    => "failed to spawn process",
+            Self::SpawnFailed => "failed to spawn process",
+        }
+    }
+}
+
+impl From<ReadError> for ExecError {
+    fn from(e: ReadError) -> Self {
+        match e {
+            ReadError::FsNotMounted => Self::FsNotMounted,
+            ReadError::FileNotFound => Self::FileNotFound,
+            ReadError::NotRegularFile => Self::NotRegularFile,
+            ReadError::IoError => Self::IoError,
         }
     }
 }
 
 pub fn exec(path: &str, args: &[&str]) -> Result<u64, ExecError> {
-    let file_data = read_file_from_ext2(path)?;
+    let file_data = vfs_read::read_file_strict(path)?;
 
     let aspace = AddressSpace::new_user().ok_or(ExecError::NoAddressSpace)?;
 
@@ -43,7 +53,7 @@ pub fn exec(path: &str, args: &[&str]) -> Result<u64, ExecError> {
         if interp_path.contains("ld-miku") || interp_path.contains("ld.so") {
             return Some(crate::ldso::LDSO_BYTES.to_vec());
         }
-        read_file_from_ext2(interp_path).ok()
+        vfs_read::read_file(interp_path)
     };
 
     let image = elf_loader::load(&file_data, &aspace, args, Some(&read_file))
@@ -67,8 +77,10 @@ pub fn exec(path: &str, args: &[&str]) -> Result<u64, ExecError> {
 
     if image.tls_base != 0 {
         let rsp = proc.rsp.load(Ordering::Relaxed);
-        unsafe { (rsp as *mut u64).add(FRAME_R8_SLOT).write(image.tls_base); }
-        crate::serial_println!("[exec] TLS base={:#x} → r8 in initial frame", image.tls_base);
+        unsafe {
+            (rsp as *mut u64).add(FRAME_R8_SLOT).write(image.tls_base);
+        }
+        crate::serial_println!("[exec] TLS base={:#x} -> r8 in initial frame", image.tls_base);
     }
 
     let pid = proc.pid;
@@ -77,37 +89,4 @@ pub fn exec(path: &str, args: &[&str]) -> Result<u64, ExecError> {
 
     crate::serial_println!("[exec] spawned pid={} from '{}' argc={}", pid, path, args.len());
     Ok(pid)
-}
-
-fn read_file_from_ext2(path: &str) -> Result<Vec<u8>, ExecError> {
-    use crate::commands::ext2_cmds::with_ext2_pub;
-    use crate::miku_extfs::error::FsError;
-
-    let result = with_ext2_pub(|fs| -> Result<Vec<u8>, FsError> {
-        let ino   = fs.resolve_path(path)?;
-        let inode = fs.read_inode(ino)?;
-        if !inode.is_regular() { return Err(FsError::NotRegularFile); }
-        let total = inode.size() as usize;
-        if total == 0 { return Ok(Vec::new()); }
-        let mut buf    = vec![0u8; total];
-        let mut offset = 0usize;
-        while offset < total {
-            let chunk = READ_CHUNK.min(total - offset);
-            let n = fs.read_file(&inode, offset as u64, &mut buf[offset..offset + chunk])?;
-            if n == 0 { break; }
-            offset += n;
-        }
-        Ok(buf)
-    });
-
-    match result {
-        Some(Ok(data))                     => {
-            crate::serial_println!("[exec] read {} bytes from '{}'", data.len(), path);
-            Ok(data)
-        }
-        Some(Err(FsError::NotFound))       => Err(ExecError::FileNotFound),
-        Some(Err(FsError::NotRegularFile)) => Err(ExecError::NotRegularFile),
-        Some(Err(_))                       => Err(ExecError::IoError),
-        None                               => Err(ExecError::FsNotMounted),
-    }
 }

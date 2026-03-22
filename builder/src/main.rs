@@ -147,6 +147,55 @@ fn build_ldmiku(root: &Path, low_ram: bool) {
         fs::metadata(&bin_dst).unwrap().len() / 1024);
 }
 
+fn build_libmiku(root: &Path, low_ram: bool) {
+    let libmiku_dir = root.join("libmiku");
+    if !libmiku_dir.exists() {
+        println!("[!] libmiku/ not found, skipping");
+        return;
+    }
+
+    println!("\nBuilding libmiku.so  (src/lib/libmiku/)...");
+
+    let rustflags = [
+        "-C relocation-model=pic",
+        "-C link-arg=-pie",
+        "-C link-arg=-z",  "-C link-arg=noexecstack",
+        "-C link-arg=-z",  "-C link-arg=now",
+        "-C link-arg=--no-dynamic-linker",
+        "-C link-arg=--export-dynamic",
+        "-C link-arg=--hash-style=both",
+        "-C no-redzone=y",
+    ].join(" ");
+
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(&libmiku_dir)
+        .env("RUSTFLAGS", &rustflags)
+        .arg("+nightly")
+        .arg("build")
+        .arg("--release")
+        .arg("--target").arg("x86_64-miku-lib.json")
+        .arg("-Z").arg("json-target-spec")
+        .arg("-Z").arg("build-std=core")
+        .arg("-Z").arg("build-std-features=compiler-builtins-mem");
+
+    if low_ram { cmd.arg("--jobs").arg("1"); }
+
+    if !cmd.status().expect("cargo build libmiku failed").success() {
+        panic!("libmiku compilation failed");
+    }
+    println!("[ok] libmiku.so built");
+
+    let bin_src = libmiku_dir.join("target/x86_64-miku-lib/release/libmiku");
+    let bin_dst = root.join("src/lib/libmiku/libmiku.so");
+    if !bin_src.exists() {
+        panic!("libmiku binary not found at {}", bin_src.display());
+    }
+    fs::copy(&bin_src, &bin_dst)
+        .unwrap_or_else(|e| panic!("Cannot copy libmiku.so: {}", e));
+    println!("[ok] libmiku.so → src/lib/libmiku/libmiku.so ({} KB)",
+        fs::metadata(&bin_dst).unwrap().len() / 1024);
+}
+
 fn create_iso(root: &Path) {
     let out_dir  = root.join("miku-os");
     fs::create_dir_all(&out_dir).unwrap();
@@ -247,6 +296,7 @@ fn main() {
 
     check_grub_mkrescue();
     build_ldmiku(&root, low_ram);
+    build_libmiku(&root, low_ram);
     build_kernel(&root, low_ram);
     create_iso(&root);
 

@@ -6,7 +6,7 @@ use crate::vmm::AddressSpace;
 use crate::pmm;
 
 const PAGE_SIZE: u64   = 4096;
-const MAX_VMAS:  usize = 64;
+const MAX_VMAS:  usize = 256;
 const MMAP_BASE:  u64  = 0x0000_0001_0000_0000;
 const MMAP_LIMIT: u64  = 0x0000_7F00_0000_0000;
 const BRK_BASE:   u64  = 0x0000_0060_0000_0000;
@@ -49,6 +49,14 @@ impl VmaMap {
             if s.active && s.start == start { s.active = false; self.count -= 1; return; }
         }
     }
+    fn remove_overlapping(&mut self, s: u64, e: u64) {
+        for v in self.vmas.iter_mut() {
+            if v.active && v.start < e && v.end > s {
+                v.active = false;
+                self.count -= 1;
+            }
+        }
+    }
     fn overlaps(&self, s: u64, e: u64) -> bool {
         self.vmas.iter().any(|v| v.active && v.start < e && v.end > s)
     }
@@ -77,10 +85,10 @@ pub fn kernel_find_free(cr3: u64, size: u64) -> Option<u64> {
     with_vma(cr3, |m| m.find_free(size))
 }
 
-pub fn kernel_register_vma(cr3: u64, start: u64, end: u64, prot: u32) {
+pub fn kernel_register_vma(cr3: u64, start: u64, end: u64, prot: u32) -> bool {
     with_vma(cr3, |m| {
-        m.insert(Vma { start, end, prot, active: true });
-    });
+        m.insert(Vma { start, end, prot, active: true })
+    })
 }
 
 pub fn vma_cleanup(cr3: u64) { VMA_MAP.lock().remove(&cr3); }
@@ -97,6 +105,11 @@ pub fn sys_mmap(cr3: u64, addr: u64, length: u64, prot: u32, flags: u32, _fd: i6
     let size = (length + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
     let base = if flags & 0x10 != 0 {
         if addr == 0 || addr & 0xFFF != 0 { return -22; }
+        let a = AddressSpace::from_raw(cr3);
+        let mut p = addr;
+        while p < addr + size { a.unmap_page(p); p += PAGE_SIZE; }
+        let _ = a.into_raw();
+        with_vma(cr3, |m| m.remove_overlapping(addr, addr + size));
         addr
     } else {
         match with_vma(cr3, |m| m.find_free(size)) { Some(a) => a, None => return -12 }
@@ -126,7 +139,14 @@ pub fn sys_mmap(cr3: u64, addr: u64, length: u64, prot: u32, flags: u32, _fd: i6
         let _ = c.into_raw();
         return -12;
     }
-    with_vma(cr3, |m| m.insert(Vma { start: base, end: base + size, prot, active: true }));
+    let inserted = with_vma(cr3, |m| m.insert(Vma { start: base, end: base + size, prot, active: true }));
+    if !inserted {
+        crate::serial_println!("[mmap] VMA table full, rolling back");
+        let c = AddressSpace::from_raw(cr3);
+        for i in 0..pages { c.unmap_page(base + i as u64 * PAGE_SIZE); }
+        let _ = c.into_raw();
+        return -12;
+    }
     crate::serial_println!("[mmap] {:#x}+{:#x} prot={}", base, size, prot);
     base as i64
 }

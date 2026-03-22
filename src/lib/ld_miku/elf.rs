@@ -14,6 +14,7 @@ pub const DT_NULL:        i64 = 0;
 pub const DT_NEEDED:      i64 = 1;
 pub const DT_PLTRELSZ:    i64 = 2;
 pub const DT_PLTGOT:      i64 = 3;
+pub const DT_HASH:        i64 = 4;
 pub const DT_STRTAB:      i64 = 5;
 pub const DT_SYMTAB:      i64 = 6;
 pub const DT_RELA:        i64 = 7;
@@ -24,6 +25,7 @@ pub const DT_INIT:        i64 = 12;
 pub const DT_JMPREL:      i64 = 23;
 pub const DT_INIT_ARRAY:  i64 = 25;
 pub const DT_INIT_ARRAYSZ:i64 = 27;
+pub const DT_GNU_HASH:    i64 = 0x6FFFFEF5;
 
 pub const R_X86_64_NONE:      u32 = 0;
 pub const R_X86_64_64:        u32 = 1;

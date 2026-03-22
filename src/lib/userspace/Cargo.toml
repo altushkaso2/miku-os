@@ -1,0 +1,18 @@
+[package]
+name    = "miku-app"
+version = "0.0.1"
+edition = "2021"
+
+[workspace]
+
+[profile.release]
+opt-level = 1
+lto = false
+
+[[bin]]
+name = "test_full"
+path = "src/test_full.rs"
+
+[[bin]]
+name = "hello"
+path = "src/hello.rs"

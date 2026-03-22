@@ -123,6 +123,7 @@ pub fn make_swap_pte(slot: u32) -> u64 {
 
 pub fn is_swap_pte(raw: u64) -> bool {
     (raw & 1) == 0 && (raw & SWAP_PTE_MARKER) != 0 && raw != 0
+     	&& (raw >> SWAP_PTE_SLOT_SHIFT) != 0
 }
 
 pub fn slot_from_pte(raw: u64) -> u32 {

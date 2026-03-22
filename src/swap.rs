@@ -157,8 +157,8 @@ pub fn swap_in(slot: u32, phys_addr: u64, drive: &mut AtaDrive) -> Result<(), Sw
 }
 
 pub fn free_swap_slot(slot: u32) {
-    SWAP.lock().free_slot(slot);
-    crate::serial_println!("[swap] free_swap_slot: slot={} freed", slot);
+    if slot == 0 { return; }
+	SWAP.lock().free_slot(slot);
 }
 
 pub fn try_reclaim_page() -> Option<u64> {

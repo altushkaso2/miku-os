@@ -49,6 +49,9 @@ mod gpt;
 mod swap;
 mod swap_map;
 mod solib;
+mod random;
+mod reloc;
+mod vfs_read;
 
 unsafe extern "C" {
     static _kernel_end: u8;
@@ -66,7 +69,7 @@ unsafe extern "C" fn kernel_main_grub(mb2_phys: u64) -> ! {
 }
 
 fn kernel_main() -> ! {
-    serial_println!("[kern] MikuOS starting (Release v0.1.4)");
+    serial_println!("[kern] MikuOS starting (Release v0.1.5)");
     gdt::init();
     unsafe {
         let cr0: u64;
@@ -112,6 +115,7 @@ fn kernel_main() -> ! {
     boot_step!("Physical memory manager", Ok(()));
     boot_step!("Virtual file system",       vfs::core::init_vfs());
     crate::solib::init();
+    crate::solib::preload("libmiku.so", crate::ldso::LIBMIKU_BYTES.to_vec());
     crate::solib::ldconfig();
     boot_step!("Shared library cache",      Ok(()));
     boot_step!("Network subsystem",         net::init());

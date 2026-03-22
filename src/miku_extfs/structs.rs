@@ -211,11 +211,12 @@ impl Superblock {
     }
 
     pub fn group_desc_size(&self) -> u32 {
-        if self.has_64bit() && self.desc_size() > 0 {
+        let raw = if self.has_64bit() && self.desc_size() > 0 {
             self.desc_size() as u32
         } else {
             32
-        }
+        };
+        if raw > 64 { 64 } else { raw }
     }
 
     pub fn blocks_count_full(&self) -> u64 {

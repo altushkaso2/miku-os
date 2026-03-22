@@ -1,6 +1,7 @@
 target/
 limine/
 miku-os/
+**/target/
 *.img
 *.is
 logs/
